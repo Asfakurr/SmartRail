@@ -253,7 +253,10 @@ export function notificationsFor(
 }
 export function coordinateAt(route: Route, chainageM: number): Coordinate {
   const end = route.geometry.findIndex((p) => p.chainageM >= chainageM);
-  if (end <= 0) return end === 0 ? route.geometry[0] : route.geometry.at(-1)!;
+  if (end <= 0) {
+    const point = end === 0 ? route.geometry[0] : route.geometry.at(-1)!;
+    return { lat: point.lat, lng: point.lng };
+  }
   const a = route.geometry[end - 1],
     b = route.geometry[end],
     t = (chainageM - a.chainageM) / (b.chainageM - a.chainageM);

@@ -80,7 +80,7 @@ async function main() {
     200,
   );
   const ping = {
-    ...coordinateAt(j.route, 6000),
+    ...coordinateAt(j.route, 0),
     journeyId: j.id,
     deviceId: "demo-gnss",
     source: "primary",

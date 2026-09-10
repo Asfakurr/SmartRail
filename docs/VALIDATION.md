@@ -2,7 +2,7 @@
 
 Validated locally on 10 September 2026. Host runtime: Node 24.19.0, Java 23. Deployment target: Cloud Functions Node 22. Node 22 itself was not available on this host; rerun in Node 22 CI before production deployment.
 
-- Eight domain tests passed: same-day identity, invalid date, chainage consistency, station ETA/dwell, duplicate recipient overlap, thresholds/expiry/passed stations, rejected GPS, stale-primary fallback/recovery, journey completion.
+- Nine domain tests passed: same-day identity, invalid date, chainage consistency, station ETA/dwell, duplicate recipient overlap, thresholds/expiry/passed stations, rejected GPS, stale-primary fallback/recovery, journey completion and strict simulator endpoint envelopes.
 - Next.js production static export compiled, type-checked and generated the app successfully.
 - Cloud Functions TypeScript compiled successfully.
 - Emulator integration passed: authenticated fake ticket import creates temporary subscribers; wrong key rejected; concurrent duplicate GPS requests accept one and reject the replay; ETA creates two mock SMS records; subsequent fixes do not duplicate them; Firestore projection publishes live RTDB data without device identity.

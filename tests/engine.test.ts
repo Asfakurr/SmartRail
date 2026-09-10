@@ -170,3 +170,12 @@ test("completion suppresses alerts and expired journeys reject ingestion", () =>
   );
   assert.throws(() => ingest(j, p, null, j.expiresAt + 1));
 });
+
+test("simulator endpoints produce strict coordinate envelopes", () => {
+  for (const distance of [0, 1800, 91000, 92000]) {
+    assert.deepEqual(Object.keys(coordinateAt(route, distance)).sort(), [
+      "lat",
+      "lng",
+    ]);
+  }
+});
