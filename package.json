@@ -1,0 +1,40 @@
+{
+  "name": "smartrail-bd",
+  "version": "0.1.0",
+  "private": true,
+  "packageManager": "pnpm@11.19.0",
+  "scripts": {
+    "dev": "next dev --webpack --hostname 127.0.0.1",
+    "build": "next build --webpack",
+    "typecheck": "tsc --noEmit && tsc -p functions/tsconfig.json --noEmit",
+    "test": "tsx --test tests/*.test.ts",
+    "functions:build": "tsc -p functions/tsconfig.json",
+    "emulators": "pnpm functions:build && firebase emulators:start --project demo-smartrail-bd",
+    "seed": "tsx scripts/seed.ts",
+    "test:emulators": "pnpm functions:build && firebase emulators:exec --project demo-smartrail-bd --only auth,firestore,database,functions 'tsx scripts/integration.ts'",
+    "simulate": "tsx scripts/simulate.ts",
+    "format": "prettier --write app lib shared functions/src scripts tests docs *.json *.ts *.mjs *.yaml README.md"
+  },
+  "dependencies": {
+    "next": "^16.0.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "firebase": "^12.0.0",
+    "leaflet": "^1.9.4",
+    "lucide-react": "^0.468.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "@types/leaflet": "^1.9.15",
+    "typescript": "^5.9.0",
+    "tsx": "^4.20.0",
+    "tailwindcss": "^4.1.0",
+    "@tailwindcss/postcss": "^4.1.0",
+    "firebase-tools": "^14.0.0",
+    "firebase-admin": "^13.0.0",
+    "@firebase/rules-unit-testing": "^5.0.0",
+    "prettier": "^3.6.0"
+  }
+}

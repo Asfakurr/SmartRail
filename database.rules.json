@@ -1,0 +1,7 @@
+{
+  "rules": {
+    ".read": false,
+    ".write": false,
+    "liveJourneys": { "$journeyId": { ".read": true, ".write": false } }
+  }
+}
