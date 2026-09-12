@@ -1,4 +1,9 @@
 import {
+  createJourneySnapshot,
+  type MasterBundle,
+  type ScheduleConfiguration,
+} from "./master";
+import {
   journeyId,
   type Journey,
   type Route,
@@ -50,7 +55,7 @@ export const route: Route = {
     {
       id: "tongi",
       name: "Tongi crossing",
-      kind: "operational_stop",
+      kind: "crossing_stop",
       lat: 23.8917,
       lng: 90.4056,
       cumulativeM: 23000,
@@ -90,28 +95,100 @@ route.geometry = route.points.map((p) => ({
 }));
 export const train: Train = {
   number: "701",
+  active: true,
+  version: 1,
   name: "SmartRail Demo Express",
   routeIds: [route.id],
 };
-export function makeJourney(date = "2026-09-10", time = "08:00"): Journey {
-  const departureMs = Date.parse(`${date}T${time}:00+06:00`);
-  if (
-    !Number.isFinite(departureMs) ||
-    new Date(departureMs + 21600000).toISOString().slice(0, 10) !== date
-  )
-    throw new Error("Invalid service date");
+export function demoMaster(time = "08:00"): MasterBundle {
+  const types = {
+    origin: "ORIGIN",
+    destination: "DESTINATION",
+    passenger_halt: "PASSENGER_HALT",
+    operational_stop: "OPERATIONAL_STOP",
+    crossing_stop: "CROSSING_STOP",
+    pass_through: "PASS_THROUGH",
+  } as const;
+  let offset = 0;
+  const timings = route.points.map((p, i) => {
+    offset +=
+      p.segmentMinutes * 60 + (i ? route.points[i - 1].dwellMinutes * 60 : 0);
+    return {
+      routePointId: p.id,
+      sequence: i,
+      scheduledArrivalOffsetSeconds: offset,
+      scheduledDepartureOffsetSeconds: offset + (i ? p.dwellMinutes * 60 : 0),
+    };
+  });
   return {
-    id: journeyId(train.number, date, time, route.id, route.direction),
-    trainNumber: train.number,
-    serviceDate: date,
-    scheduledTime: time,
-    routeId: route.id,
-    direction: route.direction,
-    departureMs,
-    expiresAt: departureMs + 6 * 3600000,
-    route: structuredClone(route),
-    status: "active",
+    train: structuredClone(train),
+    route: {
+      routeId: route.id,
+      name: route.name,
+      direction: route.direction,
+      version: route.version,
+      active: true,
+      distanceQuality: route.distanceQuality,
+      points: route.points.map((p, i) => ({
+        pointId: p.id,
+        name: p.name,
+        sequence: i,
+        type: types[p.kind],
+        latitude: p.lat,
+        longitude: p.lng,
+        distanceFromOriginMeters: p.cumulativeM,
+        defaultDwellSeconds: p.dwellMinutes * 60,
+        passengerBoardingAllowed: ["origin", "passenger_halt"].includes(p.kind),
+        passengerDropoffAllowed: ["destination", "passenger_halt"].includes(
+          p.kind,
+        ),
+        active: true,
+      })),
+      segments: route.points.slice(1).map((p, i) => ({
+        segmentId: `segment-${i}`,
+        sequence: i,
+        fromPointId: route.points[i].id,
+        toPointId: p.id,
+        startDistanceMeters: route.points[i].cumulativeM,
+        endDistanceMeters: p.cumulativeM,
+        distanceMeters: p.segmentM,
+        defaultTravelSeconds: p.segmentMinutes * 60,
+      })),
+      geometry: [
+        {
+          chunkId: "chunk-0",
+          sequence: 0,
+          vertices: route.geometry.map((p) => ({
+            latitude: p.lat,
+            longitude: p.lng,
+            distanceFromOriginMeters: p.chainageM,
+          })),
+        },
+      ],
+    },
+    schedule: {
+      gpsDeviceIds: ["demo-gnss", "demo-primary", "demo-phone"],
+      scheduleId: `701-${time.replace(":", "")}`,
+      trainNumber: train.number,
+      routeId: route.id,
+      direction: route.direction,
+      scheduledDepartureTime: time,
+      operatingDays: [0, 1, 2, 3, 4, 5, 6],
+      timezone: "Asia/Dhaka",
+      active: true,
+      version: 1,
+      timings,
+    },
   };
+}
+// Stable IDs are ONLY for the legacy browser sandbox; persisted journeys get generated IDs.
+export function makeJourney(date = "2026-09-10", time = "08:00"): Journey {
+  return createJourneySnapshot(
+    demoMaster(time),
+    date,
+    `sandbox-${journeyId(train.number, date, time, route.id, route.direction)}`,
+    0,
+  );
 }
 export const passengers: Passenger[] = [
   { id: "fake-1", name: "Demo passenger A", phone: "+8801000000001" },
@@ -120,10 +197,20 @@ export const passengers: Passenger[] = [
 export function makeTickets(journey: Journey): Ticket[] {
   return passengers.map((p, i) => ({
     id: `${journey.id}_ticket-${i}`,
+    ticketId: `${journey.id}_ticket-${i}`,
+    PNR: `DEMO-${journey.id.slice(0, 8)}-${i}`,
+    trainNumber: journey.trainNumber,
+    passengerName: p.name,
+    phone: p.phone,
+    destinationPointId: journey.route.points.at(-1)!.id,
     journeyId: journey.id,
     passengerId: p.id,
-    boardingPointId: i ? "narsingdi" : "airport",
-    status: "confirmed",
+    boardingPointId:
+      journey.route.points.filter(
+        (p) => p.passengerBoardingAllowed && p.kind !== "origin",
+      )[i]?.id ||
+      journey.route.points.find((p) => p.passengerBoardingAllowed)!.id,
+    status: "CONFIRMED",
   }));
 }
 export function ticketSubscriptions(
@@ -131,14 +218,14 @@ export function ticketSubscriptions(
   tickets = makeTickets(journey),
 ): Subscription[] {
   return tickets
-    .filter((t) => t.status === "confirmed")
+    .filter((t) => t.status === "CONFIRMED")
     .map((t) => ({
       id: t.id,
       journeyId: journey.id,
       boardingPointId: t.boardingPointId,
       passengerId: t.passengerId,
       phone: passengers.find((p) => p.id === t.passengerId)!.phone,
-      source: "ticket",
+      source: "TICKET",
       expiresAt: journey.expiresAt,
       active: true,
     }));

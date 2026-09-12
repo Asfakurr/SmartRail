@@ -7,3 +7,6 @@ functions/lib/
 *.log
 *.tsbuildinfo
 .firebase/
+
+.emulator-data/
+.sites-runtime/

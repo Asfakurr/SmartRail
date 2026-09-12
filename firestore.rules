@@ -3,13 +3,17 @@ service cloud.firestore {
  match /databases/{database}/documents {
   function admin() { return request.auth != null && request.auth.token.admin == true; }
   match /routes/{id} { allow read: if true; allow write: if false; }
+  match /routes/{id}/{group}/{child} { allow read: if group in ["points", "segments", "geometry"]; allow write: if false; }
+  match /schedules/{id}/timings/{point} { allow read: if true; allow write: if false; }
+  match /journeys/{id}/routePoints/{point} { allow read: if true; allow write: if false; }
+  match /journeys/{id}/{group}/{child} { allow read: if admin() && group in ["events", "predictionHistory", "gpsHistory"]; allow write: if false; }
   match /trains/{id} { allow read: if true; allow write: if false; }
   match /schedules/{id} { allow read: if true; allow write: if false; }
   match /journeys/{id} { allow read: if true; allow write: if false; }
-  match /settings/{id} { allow read: if true; allow write: if false; }
+  match /systemConfig/{id} { allow read: if true; allow write: if false; }
   match /subscriptions/{id} { allow read: if admin() || (request.auth != null && resource.data.passengerId == request.auth.uid); allow write: if false; }
   match /passengers/{id} { allow read: if admin(); allow write: if false; }
-  match /tickets/{id} { allow read: if admin(); allow write: if false; }
+  match /mockTickets/{id} { allow read: if admin(); allow write: if false; }
   match /notifications/{id} { allow read: if admin(); allow write: if false; }
   match /operators/{id} { allow read: if admin(); allow write: if false; }
   // Device key hashes, raw GPS and internal processing state are server-only.

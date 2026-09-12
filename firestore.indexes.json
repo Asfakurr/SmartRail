@@ -2,7 +2,7 @@
   "indexes": [],
   "fieldOverrides": [
     {
-      "collectionGroup": "fixes",
+      "collectionGroup": "gpsHistory",
       "fieldPath": "expiresAt",
       "ttl": true,
       "indexes": []

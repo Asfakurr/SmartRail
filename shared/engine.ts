@@ -99,21 +99,36 @@ export function matchRoute(point: Coordinate, route: Route) {
 }
 export const manualEta: EtaProvider = {
   version: "manual-v1",
-  predict(journey, chainageM, timestamp) {
+  predict(journey, chainageM, timestamp, speedKph, config = defaults) {
     const points = journey.route.points;
     let scheduledMinutes = 0;
     return points.map((p, i) => {
       scheduledMinutes +=
         p.segmentMinutes + (i > 0 ? points[i - 1].dwellMinutes : 0);
-      const scheduledMs = journey.departureMs + scheduledMinutes * 60000;
+      const scheduledMs = journey.routePointSnapshots[i].scheduledArrivalAt;
       let remaining = 0;
       for (let j = 1; j <= i; j++) {
         const end = points[j],
           start = points[j - 1];
-        if (end.cumulativeM > chainageM)
+        if (end.cumulativeM > chainageM) {
+          const current = start.cumulativeM <= chainageM;
+          const expectedSpeed =
+            (end.segmentM / (end.segmentMinutes * 60)) * 3.6;
+          const factor =
+            current && speedKph !== undefined
+              ? Math.min(
+                  config.etaMaxFactor,
+                  Math.max(
+                    config.etaMinFactor,
+                    expectedSpeed / Math.max(1, speedKph),
+                  ),
+                )
+              : 1;
           remaining +=
             end.segmentMinutes *
-            Math.min(1, (end.cumulativeM - chainageM) / end.segmentM);
+            Math.min(1, (end.cumulativeM - chainageM) / end.segmentM) *
+            factor;
+        }
         if (start.cumulativeM >= chainageM && j > 1)
           remaining += start.dwellMinutes;
       }
@@ -121,6 +136,8 @@ export const manualEta: EtaProvider = {
       const etaMs = passed ? scheduledMs : timestamp + remaining * 60000;
       return {
         pointId: p.id,
+        delaySeconds: passed ? 0 : Math.max(0, (etaMs - scheduledMs) / 1000),
+        confidence: speedKph === undefined ? 0.65 : 0.75,
         scheduledMs,
         etaMs,
         delayMinutes: passed
@@ -139,7 +156,8 @@ export function ingest(
   config: Thresholds = defaults,
 ): LiveState {
   if (
-    journey.status === "completed" ||
+    ["COMPLETED", "CANCELLED"].includes(journey.status) ||
+    now < journey.departureMs ||
     now > journey.expiresAt ||
     ping.journeyId !== journey.id
   )
@@ -158,7 +176,7 @@ export function ingest(
     !Number.isSafeInteger(ping.sequence) ||
     ping.sequence < 0 ||
     !Number.isSafeInteger(ping.timestamp) ||
-    Math.abs(now - ping.timestamp) > 60000
+    Math.abs(now - ping.timestamp) > config.timestampToleranceMs
   )
     throw new Error("Stale or invalid timestamp/sequence");
   if (
@@ -169,17 +187,26 @@ export function ingest(
   )
     throw new Error("Replay or out-of-order GPS");
   if (
-    ping.source === "phone" &&
+    ping.source === "OPERATOR_PHONE" &&
     now - (previous?.primaryLastSeen || journey.departureMs) <
       config.primaryStaleMs
   )
     throw new Error("Primary source is still fresh");
+  if (ping.source === "SIMULATOR" && !journey.simulated)
+    throw new Error("Simulator requires a simulated journey");
+  if (
+    ping.source === "SIMULATOR" &&
+    previous?.source === "DEDICATED_GNSS_CELLULAR" &&
+    now - previous.primaryLastSeen < config.primaryStaleMs
+  )
+    throw new Error("Dedicated primary is still healthy");
   const match = matchRoute(ping, journey.route);
   if (match.distanceM > config.maxOffRouteM)
     throw new Error("GPS is off route");
   if (previous) {
     const delta = match.chainageM - previous.chainageM;
-    if (delta < -100) throw new Error("GPS reverses route direction");
+    if (delta < -config.backwardToleranceMeters)
+      throw new Error("GPS reverses route direction");
     if (
       (Math.abs(delta) / (ping.timestamp - previous.timestamp)) * 3600 >
       config.maxSpeedKmh
@@ -188,8 +215,49 @@ export function ingest(
   }
   const chainageM = Math.max(previous?.chainageM || 0, match.chainageM);
   const total = journey.route.points.at(-1)!.cumulativeM;
+  const speedKph = previous
+    ? Math.max(
+        0,
+        ((chainageM - previous.chainageM) /
+          (ping.timestamp - previous.timestamp)) *
+          3600,
+      )
+    : 0;
+  const speedSamples = [
+    ...(previous?.speedSamples || []).filter(
+      (s) => ping.timestamp - s.timestamp <= config.recentSpeedWindowMs,
+    ),
+    ...(previous ? [{ timestamp: ping.timestamp, speedKph }] : []),
+  ].slice(-60);
+  const smoothedSpeedKph = speedSamples.length
+    ? speedSamples.reduce((sum, s) => sum + s.speedKph, 0) / speedSamples.length
+    : 0;
+  const heading = previous
+    ? ((Math.atan2(
+        (match.lng - previous.lng) * Math.cos((match.lat * Math.PI) / 180),
+        match.lat - previous.lat,
+      ) *
+        180) /
+        Math.PI +
+        360) %
+      360
+    : 0;
   return {
     journeyId: journey.id,
+    speedKph,
+    smoothedSpeedKph,
+    speedSamples,
+    heading,
+    accuracyMeters: ping.accuracyM,
+    routeDeviationMeters: match.distanceM,
+    confidence: Math.max(
+      0.3,
+      1 -
+        (match.distanceM / config.maxOffRouteM) * 0.5 -
+        (ping.accuracyM / config.maxAccuracyM) * 0.2,
+    ),
+    gpsStatus:
+      match.distanceM > config.maxOffRouteM * 0.75 ? "LOW_CONFIDENCE" : "VALID",
     lat: match.lat,
     lng: match.lng,
     timestamp: ping.timestamp,
@@ -197,14 +265,20 @@ export function ingest(
     deviceId: ping.deviceId,
     source: ping.source,
     primaryLastSeen:
-      ping.source === "primary"
+      ping.source !== "OPERATOR_PHONE"
         ? ping.timestamp
         : previous?.primaryLastSeen || 0,
     chainageM,
     progress: Math.min(1, chainageM / total),
     nextPointId:
       journey.route.points.find((p) => p.cumulativeM > chainageM)?.id || null,
-    predictions: manualEta.predict(journey, chainageM, ping.timestamp),
+    predictions: manualEta.predict(
+      journey,
+      chainageM,
+      ping.timestamp,
+      speedSamples.length ? smoothedSpeedKph : undefined,
+      config,
+    ),
     completed: chainageM >= total - 1,
   };
 }
@@ -222,7 +296,7 @@ export function notificationsFor(
       (p) => p.id === s.boardingPointId,
     );
     // One alert per recipient, journey and boarding station, including ticket/manual overlap.
-    const id = `${journey.id}_${s.boardingPointId}_${s.phone.replace(/\D/g, "")}`;
+    const id = `${journey.id}_${s.boardingPointId}_${s.phone.replace(/\D/g, "")}_DELAY_ALERT`;
     if (
       s.journeyId !== journey.id ||
       !s.active ||
@@ -230,8 +304,11 @@ export function notificationsFor(
       !p ||
       p.passed ||
       !station ||
-      !["origin", "passenger_halt"].includes(station.kind) ||
-      p.delayMinutes < threshold ||
+      !(
+        station.passengerBoardingAllowed ??
+        ["origin", "passenger_halt"].includes(station.kind)
+      ) ||
+      p.delaySeconds < threshold * 60 ||
       existingIds.has(id)
     )
       return [];
@@ -239,6 +316,7 @@ export function notificationsFor(
     return [
       {
         id,
+        notificationType: "DELAY_ALERT",
         journeyId: journey.id,
         subscriptionId: s.id,
         boardingPointId: s.boardingPointId,

@@ -1,3 +1,9 @@
+import { markStaleGps } from "./stale";
+import { createFromSavedSchedule, saveMaster } from "./master-data";
+import { liveProjection } from "../../shared/live";
+import { coordinateAt } from "../../shared/engine";
+import { MockSmsService } from "./sms";
+import { onSchedule } from "firebase-functions/v2/scheduler";
 import { initializeApp } from "firebase-admin/app";
 import { getAuth } from "firebase-admin/auth";
 import { getFirestore } from "firebase-admin/firestore";
@@ -37,7 +43,7 @@ const pingSchema = z
       .string()
       .max(100)
       .regex(/^[\w-]+$/),
-    source: z.enum(["primary", "phone"]),
+    source: z.enum(["DEDICATED_GNSS_CELLULAR", "OPERATOR_PHONE", "SIMULATOR"]),
     lat: z.number(),
     lng: z.number(),
     accuracyM: z.number(),
@@ -71,34 +77,38 @@ function demoEnabled() {
 // Both HTTPS and a future authenticated MQTT bridge call this single service boundary.
 export async function processGps(
   raw: unknown,
-  credential: { key?: string; uid?: string },
+  credential: { key?: string; uid?: string; simulationAdmin?: boolean },
   now = Date.now(),
 ) {
   const ping = pingSchema.parse(raw);
-  const deviceSnap = await db.doc(`devices/${ping.deviceId}`).get();
+  const deviceSnap = await db.doc(`gpsDevices/${ping.deviceId}`).get();
   const device = deviceSnap.data() as Device | undefined;
-  if (
-    !device?.active ||
-    device.journeyId !== ping.journeyId ||
-    device.source !== ping.source
-  )
+  if (!device?.active || device.source !== ping.source)
     throw new Error("Forbidden");
-  if (ping.source === "primary") {
+  if (
+    ping.source !== "OPERATOR_PHONE" &&
+    !(ping.source === "SIMULATOR" && credential.simulationAdmin)
+  ) {
     const expected = Buffer.from(device.keyHash || "", "hex"),
       actual = Buffer.from(hash(credential.key || ""), "hex");
     if (expected.length !== actual.length || !timingSafeEqual(expected, actual))
       throw new Error("Unauthorized");
-  } else {
+  } else if (ping.source === "OPERATOR_PHONE") {
     if (!credential.uid || device.operatorUid !== credential.uid)
       throw new Error("Forbidden");
     const operator = (await db.doc(`operators/${credential.uid}`).get()).data();
-    if (!operator?.active || !operator.journeyIds?.includes(ping.journeyId))
+    if (
+      !operator?.active ||
+      !operator.trainNumbers?.includes(device.trainNumber)
+    )
       throw new Error("Forbidden");
   }
   return db.runTransaction(async (tx) => {
     const journeyRef = db.doc(`journeys/${ping.journeyId}`),
       stateRef = db.doc(`liveInternal/${ping.journeyId}`);
-    const checkpointRef = db.doc(`deviceCheckpoints/${ping.deviceId}`);
+    const checkpointRef = db.doc(
+      `deviceCheckpoints/${ping.deviceId}_${ping.journeyId}`,
+    );
     const [
       journeyDoc,
       stateDoc,
@@ -109,7 +119,7 @@ export async function processGps(
     ] = await Promise.all([
       tx.get(journeyRef),
       tx.get(stateRef),
-      tx.get(db.doc("settings/thresholds")),
+      tx.get(db.doc("systemConfig/global")),
       tx.get(
         db.collection("subscriptions").where("journeyId", "==", ping.journeyId),
       ),
@@ -118,7 +128,8 @@ export async function processGps(
     ]);
     if (
       !registeredDevice.data()?.active ||
-      registeredDevice.data()?.journeyId !== ping.journeyId ||
+      registeredDevice.data()?.trainNumber !== device.trainNumber ||
+      registeredDevice.data()?.source !== ping.source ||
       registeredDevice.data()?.keyHash !== device.keyHash ||
       registeredDevice.data()?.operatorUid !== device.operatorUid
     )
@@ -127,44 +138,138 @@ export async function processGps(
     if (
       checkpoint &&
       (ping.sequence <= checkpoint.sequence ||
-        ping.timestamp - checkpoint.timestamp < 1000)
+        ping.timestamp - checkpoint.timestamp <
+          (settingsDoc.data()?.gpsMinIntervalMs ?? defaults.gpsMinIntervalMs))
     )
       throw new Error("Replay or GPS rate limit");
     if (!journeyDoc.exists) throw new Error("Journey missing");
-    if (subsDoc.size > 400)
+    if (subsDoc.size > 100)
       throw new Error("Prototype subscription capacity exceeded");
     const journey = journeyDoc.data() as Journey,
       previous = stateDoc.exists ? (stateDoc.data() as LiveState) : null;
+    if (journey.schemaVersion !== 2)
+      throw new Error(
+        "Legacy journey is read-only; create a new journey from saved master data",
+      );
+    if (
+      device.trainNumber !== journey.trainNumber ||
+      !journey.scheduleSnapshot.gpsDeviceIds.includes(device.id)
+    )
+      throw new Error("Forbidden");
+    if (ping.source === "OPERATOR_PHONE") {
+      const op = await tx.get(db.doc(`operators/${credential.uid}`));
+      if (
+        !op.data()?.active ||
+        !op.data()?.trainNumbers?.includes(journey.trainNumber)
+      )
+        throw new Error("Forbidden");
+    }
     const config = { ...defaults, ...settingsDoc.data() } as Thresholds;
     const live = ingest(journey, ping, previous, now, config);
-    const candidates = notificationsFor(
-      journey,
-      live,
-      subsDoc.docs.map((d) => d.data() as Subscription),
-      new Set(),
-      config.delayMinutes,
-    );
+    const candidates =
+      config.notificationsEnabled && config.mockSmsEnabled
+        ? notificationsFor(
+            journey,
+            live,
+            subsDoc.docs.map((d) => d.data() as Subscription),
+            new Set(),
+            config.delayMinutes,
+          )
+        : [];
     const refs = candidates.map((n) => db.doc(`notifications/${n.id}`));
     const existing = refs.length ? await tx.getAll(...refs) : [];
-    tx.set(stateRef, live);
+    tx.set(stateRef, {
+      ...live,
+      receivedAt: Date.now(),
+      revision: (stateDoc.data()?.revision || 0) + 1,
+      projection: liveProjection(journey, live, config),
+    });
     tx.set(checkpointRef, {
       sequence: ping.sequence,
       timestamp: ping.timestamp,
     });
     tx.set(
       db.doc(
-        `gpsHistory/${ping.journeyId}/fixes/${ping.deviceId}_${ping.sequence}`,
+        `journeys/${ping.journeyId}/gpsHistory/${ping.deviceId}_${ping.sequence}`,
       ),
       {
         ...ping,
+        rawCoordinates: { latitude: ping.lat, longitude: ping.lng },
+        matchedCoordinates: { latitude: live.lat, longitude: live.lng },
+        speedKph: live.speedKph,
+        trackingSource: live.source,
+        validationStatus: live.gpsStatus,
+        routeDeviationMeters: live.routeDeviationMeters,
+        distanceFromOriginMeters: live.chainageM,
+        currentSegmentId: liveProjection(journey, live, config).progress
+          .currentSegmentId,
+        recordedAt: Date.now(),
         chainageM: live.chainageM,
         expiresAt: new Date(now + 7 * 86400000),
       },
     );
     candidates.forEach((n, i) => {
-      if (!existing[i].exists) tx.create(refs[i], n);
+      if (!existing[i].exists) {
+        tx.create(refs[i], new MockSmsService().prepare(n));
+        tx.create(db.doc(`journeys/${journey.id}/events/${n.id}`), {
+          type: "DELAY_THRESHOLD_CROSSED",
+          pointId: n.boardingPointId,
+          recordedAt: live.timestamp,
+          notificationId: n.id,
+        });
+      }
     });
-    if (live.completed) tx.update(journeyRef, { status: "completed" });
+    const event = (type: string, pointId?: string) =>
+      tx.set(
+        db.doc(
+          `journeys/${journey.id}/events/${ping.deviceId}_${ping.sequence}_${type}_${pointId || "journey"}`,
+        ),
+        {
+          type,
+          pointId: pointId || null,
+          recordedAt: live.timestamp,
+          source: live.source,
+          inferred: true,
+        },
+      );
+    if (!previous) event("JOURNEY_STARTED");
+    if (previous?.gpsStatus === "STALE") event("GPS_RECOVERED");
+    if (previous && previous.source !== live.source)
+      event("GPS_SOURCE_SWITCHED");
+    journey.route.points.forEach((p) => {
+      if (
+        (!previous || previous.chainageM < p.cumulativeM) &&
+        live.chainageM >= p.cumulativeM
+      )
+        event("STATION_REACHED", p.id);
+      if (
+        previous &&
+        previous.chainageM <= p.cumulativeM &&
+        live.chainageM > p.cumulativeM
+      )
+        event("STATION_DEPARTED", p.id);
+    });
+    tx.set(
+      db.doc(
+        `journeys/${journey.id}/predictionHistory/${ping.deviceId}_${ping.sequence}`,
+      ),
+      {
+        recordedAt: live.timestamp,
+        modelVersion: "manual-speed-v2",
+        predictions: live.predictions,
+      },
+    );
+    if (live.completed) {
+      subsDoc.docs.forEach((d) =>
+        tx.update(d.ref, {
+          active: false,
+          expiresAt: Math.min(live.timestamp, d.data().expiresAt),
+        }),
+      );
+      tx.update(journeyRef, { status: "COMPLETED" });
+      event("JOURNEY_COMPLETED");
+    } else if (journey.status !== "RUNNING")
+      tx.update(journeyRef, { status: "RUNNING" });
     return live;
   });
 }
@@ -172,18 +277,13 @@ export async function processGps(
 export const publishLive = onDocumentWritten(
   { document: "liveInternal/{journeyId}", region: "asia-south1", retry: true },
   async (event) => {
-    const live = event.data?.after.data() as LiveState | undefined;
-    if (!live) return;
-    const {
-      deviceId: _deviceId,
-      sequence: _sequence,
-      primaryLastSeen: _primary,
-      ...publicLive
-    } = live;
+    const state = event.data?.after.data();
+    if (!state?.projection) return;
+    const publicLive = { ...state.projection, revision: state.revision };
     await getDatabase()
       .ref(`liveJourneys/${event.params.journeyId}`)
       .transaction((current) =>
-        !current || current.timestamp < live.timestamp ? publicLive : undefined,
+        !current || current.revision < state.revision ? publicLive : undefined,
       );
   },
 );
@@ -195,7 +295,10 @@ export const api = onRequest(
         res.status(405).json({ error: "Use POST" });
         return;
       }
-      if (Number(req.headers["content-length"] || 0) > 16384) {
+      if (
+        Buffer.byteLength(JSON.stringify(req.body || {})) >
+        (req.path === "/master" ? 700000 : 16384)
+      ) {
         res.status(413).json({ error: "Payload too large" });
         return;
       }
@@ -203,7 +306,7 @@ export const api = onRequest(
       if (path === "/gps") {
         const body = pingSchema.parse(req.body);
         const user =
-          body.source === "phone"
+          body.source === "OPERATOR_PHONE"
             ? await identity(req.headers.authorization)
             : null;
         const live = await processGps(body, {
@@ -213,6 +316,157 @@ export const api = onRequest(
         res.json({ live });
         return;
       }
+      if (path === "/journey-status") {
+        await admin(req.headers.authorization);
+        const input = z
+          .object({
+            journeyId: idSchema,
+            status: z.enum(["READY", "CANCELLED"]),
+          })
+          .strict()
+          .parse(req.body);
+        await db.runTransaction(async (tx) => {
+          const r = db.doc(`journeys/${input.journeyId}`),
+            j = await tx.get(r);
+          if (!j.exists) throw new Error("Journey missing");
+          const stateRef = db.doc(`liveInternal/${input.journeyId}`),
+            state = await tx.get(stateRef),
+            subs = await tx.get(
+              db
+                .collection("subscriptions")
+                .where("journeyId", "==", input.journeyId),
+            );
+          if (
+            input.status === "READY"
+              ? j.data()?.status !== "SCHEDULED"
+              : ["CANCELLED", "COMPLETED"].includes(j.data()?.status)
+          )
+            throw new Error("Invalid status transition");
+          tx.update(r, { status: input.status });
+          if (input.status === "CANCELLED") {
+            subs.docs.forEach((d) => tx.update(d.ref, { active: false }));
+            if (state.exists) {
+              const data = state.data()!;
+              tx.update(stateRef, {
+                completed: true,
+                revision: data.revision + 1,
+                projection: {
+                  ...data.projection,
+                  completed: true,
+                  tracking: {
+                    ...data.projection.tracking,
+                    gpsStatus: "STALE",
+                    primaryDeviceHealthy: false,
+                  },
+                },
+              });
+            }
+          }
+        });
+        res.json({ status: input.status });
+        return;
+      }
+      if (path === "/master") {
+        await admin(req.headers.authorization);
+        await saveMaster(req.body);
+        res.json({ saved: true });
+        return;
+      }
+      if (path === "/simulate") {
+        const user = await admin(req.headers.authorization);
+        if (!demoEnabled()) throw new Error("Simulator disabled");
+        const input = z
+          .object({ journeyId: idSchema, action: z.enum(["STEP", "HOLD"]) })
+          .strict()
+          .parse(req.body);
+        const snap = await db.doc(`journeys/${input.journeyId}`).get(),
+          journey = snap.data() as Journey;
+        if (!journey?.simulated)
+          throw new Error("Simulator requires a simulated journey");
+        const previous = (
+          await db.doc(`liveInternal/${journey.id}`).get()
+        ).data() as LiveState | undefined;
+        const devices = await Promise.all(
+          journey.scheduleSnapshot.gpsDeviceIds.map((id) =>
+            db.doc(`gpsDevices/${id}`).get(),
+          ),
+        );
+        const device = devices
+          .map((d) => d.data() as Device)
+          .find((d) => d?.active && d.source === "SIMULATOR");
+        if (!device) throw new Error("No assigned simulator device");
+        const checkpoint = (
+          await db.doc(`deviceCheckpoints/${device.id}_${journey.id}`).get()
+        ).data();
+        const timestamp =
+          (previous?.timestamp ?? journey.departureMs) +
+          (input.action === "HOLD" ? 12 : 3) * 60000;
+        const distance = Math.min(
+          journey.route.points.at(-1)!.cumulativeM,
+          (previous?.chainageM ?? 0) + (input.action === "HOLD" ? 0 : 1800),
+        );
+        const live = await processGps(
+          {
+            ...coordinateAt(journey.route, distance),
+            journeyId: journey.id,
+            deviceId: device.id,
+            source: "SIMULATOR",
+            timestamp,
+            sequence: (checkpoint?.sequence ?? 0) + 1,
+            accuracyM: 8,
+          },
+          { uid: user.uid, simulationAdmin: true },
+          timestamp,
+        );
+        res.json({
+          live: liveProjection(journey, live, {
+            ...defaults,
+            ...(await db.doc("systemConfig/global").get()).data(),
+          }),
+        });
+        return;
+      }
+      if (path === "/unsubscribe") {
+        const user = await identity(req.headers.authorization),
+          id = idSchema.parse(req.body.subscriptionId);
+        await db.runTransaction(async (tx) => {
+          const r = db.doc(`subscriptions/${id}`),
+            s = await tx.get(r);
+          if (
+            !s.exists ||
+            s.data()?.source !== "MANUAL" ||
+            s.data()?.passengerId !== user.uid
+          )
+            throw new Error("Forbidden");
+          tx.update(r, { active: false });
+        });
+        res.json({ cancelled: true });
+        return;
+      }
+      if (path === "/config") {
+        await admin(req.headers.authorization);
+        const config = z
+          .object({
+            delayMinutes: z.number().min(1).max(120),
+            primaryStaleMs: z.number().int().min(1000).max(3600000),
+            maxAccuracyM: z.number().positive().max(1000),
+            maxOffRouteM: z.number().positive().max(5000),
+            maxSpeedKmh: z.number().positive().max(300),
+            timestampToleranceMs: z.number().int().min(1000).max(120000),
+            recentSpeedWindowMs: z.number().int().min(1000).max(3600000),
+            etaMinFactor: z.number().min(0.25).max(1),
+            etaMaxFactor: z.number().min(1).max(4),
+            notificationsEnabled: z.boolean(),
+            mockSmsEnabled: z.boolean(),
+            gpsMinIntervalMs: z.number().int().min(100).max(60000),
+            backwardToleranceMeters: z.number().min(0).max(500),
+          })
+          .strict()
+          .parse(req.body);
+        await db.doc("systemConfig/global").set(config);
+        res.json({ config });
+        return;
+      }
       if (path === "/mock-tickets") {
         await admin(req.headers.authorization);
         if (!demoEnabled()) throw new Error("Mock data is disabled");
@@ -220,10 +474,12 @@ export const api = onRequest(
         const snap = await db.doc(`journeys/${id}`).get();
         if (!snap.exists) throw new Error("Journey missing");
         const journey = snap.data() as Journey;
+        if (["COMPLETED", "CANCELLED"].includes(journey.status))
+          throw new Error("Journey is closed");
         const batch = db.batch();
         passengers.forEach((p) => batch.set(db.doc(`passengers/${p.id}`), p));
         makeTickets(journey).forEach((t) =>
-          batch.set(db.doc(`tickets/${t.id}`), t),
+          batch.set(db.doc(`mockTickets/${t.id}`), t),
         );
         ticketSubscriptions(journey).forEach((s) =>
           batch.set(db.doc(`subscriptions/${s.id}`), s),
@@ -250,10 +506,9 @@ export const api = onRequest(
         if (
           !journey ||
           journey.expiresAt < Date.now() ||
+          ["COMPLETED", "CANCELLED"].includes(journey.status) ||
           !journey.route.points.some(
-            (p) =>
-              p.id === input.boardingPointId &&
-              ["origin", "passenger_halt"].includes(p.kind),
+            (p) => p.id === input.boardingPointId && p.passengerBoardingAllowed,
           )
         )
           throw new Error("Invalid boarding station or expired journey");
@@ -264,7 +519,7 @@ export const api = onRequest(
           ...input,
           id,
           passengerId: user.uid,
-          source: "manual",
+          source: "MANUAL",
           expiresAt: journey.expiresAt,
           active: true,
         };
@@ -272,7 +527,7 @@ export const api = onRequest(
           const existing = await tx.get(
             db.collection("subscriptions").where("journeyId", "==", journey.id),
           );
-          if (existing.size >= 400)
+          if (existing.size >= 100)
             throw new Error("Prototype subscription capacity exceeded");
           tx.set(db.doc(`subscriptions/${id}`), subscription);
         });
@@ -288,7 +543,7 @@ export const api = onRequest(
           .max(120)
           .parse(req.body.delayMinutes);
         await db
-          .doc("settings/thresholds")
+          .doc("systemConfig/global")
           .set({ delayMinutes }, { merge: true });
         res.json({ delayMinutes });
         return;
@@ -298,15 +553,13 @@ export const api = onRequest(
         if (!demoEnabled())
           throw new Error("Demo journey creation is disabled");
         const input = z
-            .object({ date: z.string(), time: z.string() })
-            .strict()
-            .parse(req.body),
-          journey = makeJourney(input.date, input.time);
-        const route = await db.doc(`routes/${journey.routeId}`).get(),
-          train = await db.doc(`trains/${journey.trainNumber}`).get();
-        if (!route.exists || !train.exists)
-          throw new Error("Configure route before train and journey");
-        await db.doc(`journeys/${journey.id}`).create(journey);
+          .object({ scheduleId: idSchema, serviceDate: z.string() })
+          .strict()
+          .parse(req.body);
+        const journey = await createFromSavedSchedule(
+          input.scheduleId,
+          input.serviceDate,
+        );
         res.json({ journey });
         return;
       }
@@ -315,16 +568,19 @@ export const api = onRequest(
       const message = error instanceof Error ? error.message : "Request failed";
       const status =
         message === "Unauthorized" ? 401 : message === "Forbidden" ? 403 : 400;
-      res
-        .status(status)
-        .json({
-          error:
-            status === 400
-              ? message
-              : status === 401
-                ? "Unauthorized"
-                : "Forbidden",
-        });
+      res.status(status).json({
+        error:
+          status === 400
+            ? message
+            : status === 401
+              ? "Unauthorized"
+              : "Forbidden",
+      });
     }
   },
+);
+
+export const detectStaleGps = onSchedule(
+  { schedule: "every 1 minutes", region: "asia-south1" },
+  () => markStaleGps(),
 );

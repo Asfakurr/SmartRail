@@ -14,7 +14,7 @@ const ping = (overrides: Partial<GpsPing> = {}): GpsPing => ({
   ...coordinateAt(route, 6000),
   journeyId: j.id,
   deviceId: "primary-1",
-  source: "primary",
+  source: "DEDICATED_GNSS_CELLULAR",
   timestamp: j.departureMs + 25 * 60000,
   sequence: 1,
   accuracyM: 8,
@@ -51,7 +51,7 @@ test("one alert per recipient journey boarding station, including duplicate sour
   const alerts = notificationsFor(
     j,
     live,
-    [...subs, { ...subs[0], id: "manual-duplicate", source: "manual" }],
+    [...subs, { ...subs[0], id: "manual-duplicate", source: "MANUAL" }],
     ids,
     10,
   );
@@ -131,7 +131,7 @@ test("phone fallback blocked while primary fresh, allowed when stale, primary re
       j,
       ping({
         deviceId: "phone",
-        source: "phone",
+        source: "OPERATOR_PHONE",
         timestamp: p.timestamp + 30000,
       }),
       live,
@@ -142,20 +142,20 @@ test("phone fallback blocked while primary fresh, allowed when stale, primary re
     j,
     ping({
       deviceId: "phone",
-      source: "phone",
+      source: "OPERATOR_PHONE",
       timestamp: p.timestamp + defaults.primaryStaleMs + 1,
     }),
     live,
     p.timestamp + defaults.primaryStaleMs + 1,
   );
-  assert.equal(phone.source, "phone");
+  assert.equal(phone.source, "OPERATOR_PHONE");
   const recovered = ingest(
     j,
     ping({ sequence: 2, timestamp: phone.timestamp + 1000 }),
     phone,
     phone.timestamp + 1000,
   );
-  assert.equal(recovered.source, "primary");
+  assert.equal(recovered.source, "DEDICATED_GNSS_CELLULAR");
 });
 test("completion suppresses alerts and expired journeys reject ingestion", () => {
   const p = ping({

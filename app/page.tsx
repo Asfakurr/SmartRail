@@ -1,6 +1,7 @@
 "use client";
 import { useEffect, useState } from "react";
 import dynamic from "next/dynamic";
+import MasterEditor from "./master-editor";
 import {
   TrainFront,
   MapPin,
@@ -25,6 +26,8 @@ import {
   ticketSubscriptions,
   passengers,
 } from "@/shared/seed";
+import { toLiveView } from "@/shared/live";
+import type { ScheduleConfiguration } from "@/shared/master";
 import { coordinateAt, ingest, notificationsFor } from "@/shared/engine";
 import {
   defaults,
@@ -47,7 +50,7 @@ const RailMap = dynamic(() => import("./map"), {
   ssr: false,
   loading: () => <div className="map loading">Loading route map…</div>,
 });
-const firebaseMode = process.env.NEXT_PUBLIC_DATA_MODE === "firebase";
+const firebaseMode = process.env.NEXT_PUBLIC_DATA_MODE !== "demo";
 const format = (ms: number) =>
   new Intl.DateTimeFormat("en-GB", {
     timeZone: "Asia/Dhaka",
@@ -58,14 +61,14 @@ const kindLabel: Record<string, string> = {
   origin: "Origin",
   destination: "Destination",
   passenger_halt: "Passenger halt",
-  operational_stop: "Operational / crossing",
+  operational_stop: "Operational stop",
+  crossing_stop: "Crossing stop",
   pass_through: "Pass-through",
 };
 export default function Home() {
-  const [journeys, setJourneys] = useState<Journey[]>([
-    makeJourney(),
-    makeJourney("2026-09-10", "16:00"),
-  ]);
+  const [journeys, setJourneys] = useState<Journey[]>(
+    firebaseMode ? [] : [makeJourney(), makeJourney("2026-09-10", "16:00")],
+  );
   const [selected, setSelected] = useState(""),
     [search, setSearch] = useState(""),
     [date, setDate] = useState("2026-09-10"),
@@ -75,9 +78,16 @@ export default function Home() {
     return onSnapshot(
       collection(firebaseClient().firestore, "journeys"),
       (s) => {
-        const data = s.docs.map((d) => d.data() as Journey);
+        const data = s.docs
+          .map((d) => d.data() as Journey)
+          .filter((j) => j.schemaVersion === 2);
         setJourneys(data);
-        if (data.length) setDate(data[0].serviceDate);
+        if (data.length)
+          setDate((previous) =>
+            data.some((j) => j.serviceDate === previous)
+              ? previous
+              : data[0].serviceDate,
+          );
       },
       (e) => setError(e.message),
     );
@@ -85,7 +95,7 @@ export default function Home() {
   const filtered = journeys.filter(
     (j) =>
       j.serviceDate === date &&
-      `${j.trainNumber} ${train.name}`
+      `${j.trainNumber} ${j.trainSnapshot.name}`
         .toLowerCase()
         .includes(search.toLowerCase()),
   );
@@ -121,9 +131,7 @@ export default function Home() {
             Workspace <ChevronRight size={14} /> Live operations
           </span>
           <span className="badge">
-            {firebaseMode
-              ? "Firebase connected mode"
-              : "Interactive simulation"}
+            {firebaseMode ? "Firebase backend mode" : "Offline sandbox"}
           </span>
         </header>
         <div className="content">
@@ -137,7 +145,7 @@ export default function Home() {
             </div>
             <span className="tag">
               <Radio size={15} />{" "}
-              {firebaseMode ? "Live data service" : "Demo data"}
+              {firebaseMode ? "Live data service" : "Research prototype"}
             </span>
           </div>
           <div className="notice">
@@ -201,7 +209,7 @@ export default function Home() {
           ) : (
             <section className="card empty">
               <TrainFront />
-              <h2>No journeys for this search</h2>
+              <h2>No matching saved journeys</h2>
               <p>
                 Try train 701 on 10 September 2026, or load emulator seed data
                 in Firebase mode.
@@ -239,6 +247,20 @@ function JourneyView({
     const timer = setInterval(() => setWallClock(Date.now()), 15000);
     return () => clearInterval(timer);
   }, []);
+  const [scheduleList, setScheduleList] = useState<ScheduleConfiguration[]>([]);
+  const [scheduleId, setScheduleId] = useState(
+    journey.scheduleSnapshot.scheduleId,
+  );
+  const [manualId, setManualId] = useState("");
+  useEffect(() => {
+    if (!firebaseMode) return;
+    return onSnapshot(
+      collection(firebaseClient().firestore, "schedules"),
+      (s) =>
+        setScheduleList(s.docs.map((d) => d.data() as ScheduleConfiguration)),
+      (e) => setError(e.message),
+    );
+  }, []);
   const [tab, setTab] = useState("journey"),
     [adminTab, setAdminTab] = useState("Overview");
   const [live, setLive] = useState<LiveState | null>(null),
@@ -262,11 +284,11 @@ function JourneyView({
     const stops = [
       onValue(
         ref(c.database, `liveJourneys/${journey.id}`),
-        (s) => setLive(s.val()),
+        (s) => setLive(s.exists() ? toLiveView(s.val(), journey) : null),
         (e) => setError(e.message),
       ),
       onSnapshot(
-        doc(c.firestore, "settings/thresholds"),
+        doc(c.firestore, "systemConfig/global"),
         (s) => setThreshold(s.data()?.delayMinutes || 10),
         (e) => setError(e.message),
       ),
@@ -300,7 +322,20 @@ function JourneyView({
     ];
     return () => stops.forEach((stop) => stop());
   }, [isAdmin, journey.id]);
-  function step(wait = false) {
+  async function step(wait = false) {
+    if (firebaseMode) {
+      try {
+        const result = await api("/simulate", {
+          journeyId: journey.id,
+          action: wait ? "HOLD" : "STEP",
+        });
+        if (result.live.completed) setRunning(false);
+      } catch (e) {
+        setError((e as Error).message);
+        setRunning(false);
+      }
+      return;
+    }
     try {
       const timestamp =
         (live?.timestamp || journey.departureMs) + (wait ? 12 : 3) * 60000;
@@ -312,7 +347,7 @@ function JourneyView({
         ...coordinateAt(journey.route, distance),
         journeyId: journey.id,
         deviceId: "demo-gnss",
-        source: "primary" as const,
+        source: "SIMULATOR" as const,
         timestamp,
         sequence: (live?.sequence || 0) + 1,
         accuracyM: 8,
@@ -354,7 +389,7 @@ function JourneyView({
       await api("/mock-tickets", { journeyId: journey.id });
     } else
       setSubscriptions((old) => [
-        ...old.filter((s) => s.source !== "ticket"),
+        ...old.filter((s) => s.source !== "TICKET"),
         ...ticketSubscriptions(journey),
       ]);
     setMessage(
@@ -373,11 +408,12 @@ function JourneyView({
       throw new Error("Use a fake number in the +8801000000000–9999 range.");
     if (firebaseMode) {
       if (!user) await signInAnonymously(firebaseClient().auth);
-      await api("/subscribe", {
+      const result = await api("/subscribe", {
         journeyId: journey.id,
         boardingPointId: station,
         phone,
       });
+      setManualId(result.id);
     } else {
       const id = `manual-${station}-${phone}`;
       setSubscriptions((old) => [
@@ -388,7 +424,7 @@ function JourneyView({
           boardingPointId: station,
           phone,
           passengerId: "demo-manual",
-          source: "manual",
+          source: "MANUAL",
           expiresAt: journey.expiresAt,
           active: true,
         },
@@ -485,7 +521,7 @@ function JourneyView({
           <div className="journey-title">
             <div>
               <span className="train-number">{journey.trainNumber}</span>
-              <h2>{train.name}</h2>
+              <h2>{journey.trainSnapshot?.name || "Archived train"}</h2>
               <span className="muted">{journey.route.name}</span>
             </div>
             <span className="badge">
@@ -554,7 +590,7 @@ function JourneyView({
                 </span>
                 <span>Approximate geography</span>
               </div>
-              {!firebaseMode && (
+              {(!firebaseMode || isAdmin) && (
                 <div className="simulator">
                   <div>
                     <strong>GPS simulator</strong>
@@ -582,7 +618,8 @@ function JourneyView({
                       +12 min hold
                     </button>
                     <button
-                      aria-label="Reset simulation"
+                      disabled={firebaseMode}
+                      aria-label="Reset offline sandbox"
                       title="Reset GPS and mock alerts"
                       onClick={() => {
                         setRunning(false);
@@ -639,7 +676,8 @@ function JourneyView({
                 })}
               </div>
               <div className="route-foot">
-                ETA uses configured travel and dwell times.
+                ETA uses configured travel, dwell and bounded recent-speed
+                adjustment.
               </div>
             </section>
           </div>
@@ -669,9 +707,7 @@ function JourneyView({
                     onChange={(e) => setStation(e.target.value)}
                   >
                     {journey.route.points
-                      .filter((p) =>
-                        ["origin", "passenger_halt"].includes(p.kind),
-                      )
+                      .filter((p) => p.passengerBoardingAllowed)
                       .map((p) => (
                         <option key={p.id} value={p.id}>
                           {p.name}
@@ -691,6 +727,19 @@ function JourneyView({
                   Subscribe <ArrowUpRight size={16} />
                 </button>
               </form>
+              {manualId && (
+                <button
+                  onClick={() =>
+                    void act(async () => {
+                      await api("/unsubscribe", { subscriptionId: manualId });
+                      setManualId("");
+                      setMessage("Manual subscription cancelled.");
+                    })
+                  }
+                >
+                  Cancel my manual subscription
+                </button>
+              )}
               <small>
                 No real SMS is sent. Subscription expires with this journey.
               </small>
@@ -868,13 +917,23 @@ function JourneyView({
                   {adminTab === "Routes & trains" && (
                     <div className="admin-body">
                       <h3>
-                        {train.number} · {train.name}
+                        {train.number} · {journey.trainSnapshot.name}
                       </h3>
                       <p>
                         Route {journey.route.id} · v{journey.route.version} ·{" "}
                         {journey.direction}. Demo distances must be replaced by
                         surveyed railway chainage.
                       </p>
+                      {firebaseMode && (
+                        <MasterEditor
+                          journey={journey}
+                          onSaved={() =>
+                            setMessage(
+                              "Master configuration saved. Existing journey snapshots remain unchanged.",
+                            )
+                          }
+                        />
+                      )}
                       <div className="table-wrap">
                         <table>
                           <thead>
@@ -909,7 +968,7 @@ function JourneyView({
                   )}
                   {adminTab === "Journeys" && (
                     <div className="admin-body">
-                      <h3>Schedule another demo departure</h3>
+                      <h3>Create a journey from a saved schedule</h3>
                       <p className="mono">{journey.id}</p>
                       <form
                         onSubmit={(e) => {
@@ -918,8 +977,8 @@ function JourneyView({
                             const j = firebaseMode
                               ? (
                                   await api("/journey", {
-                                    date: newDate,
-                                    time: newTime,
+                                    serviceDate: newDate,
+                                    scheduleId,
                                   })
                                 ).journey
                               : makeJourney(newDate, newTime);
@@ -936,15 +995,32 @@ function JourneyView({
                             onChange={(e) => setNewDate(e.target.value)}
                           />
                         </label>
-                        <label>
-                          Scheduled time
-                          <input
-                            type="time"
-                            required
-                            value={newTime}
-                            onChange={(e) => setNewTime(e.target.value)}
-                          />
-                        </label>
+                        {firebaseMode ? (
+                          <label>
+                            Saved schedule
+                            <select
+                              value={scheduleId}
+                              onChange={(e) => setScheduleId(e.target.value)}
+                            >
+                              {scheduleList.map((s) => (
+                                <option key={s.scheduleId} value={s.scheduleId}>
+                                  {s.trainNumber} · {s.scheduledDepartureTime} ·{" "}
+                                  {s.direction}
+                                </option>
+                              ))}
+                            </select>
+                          </label>
+                        ) : (
+                          <label>
+                            Sandbox scheduled time
+                            <input
+                              type="time"
+                              required
+                              value={newTime}
+                              onChange={(e) => setNewTime(e.target.value)}
+                            />
+                          </label>
+                        )}
                         <button className="primary">Create journey</button>
                       </form>
                       <p className="small">

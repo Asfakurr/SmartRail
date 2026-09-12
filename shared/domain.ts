@@ -1,14 +1,22 @@
+import type {
+  RouteConfiguration,
+  ScheduleConfiguration,
+  JourneyRoutePoint,
+} from "./master";
 export type PointKind =
   | "origin"
   | "destination"
   | "passenger_halt"
   | "operational_stop"
+  | "crossing_stop"
   | "pass_through";
 export interface Coordinate {
   lat: number;
   lng: number;
 }
 export interface RoutePoint extends Coordinate {
+  passengerBoardingAllowed?: boolean;
+  passengerDropoffAllowed?: boolean;
   id: string;
   name: string;
   kind: PointKind;
@@ -27,18 +35,23 @@ export interface Route {
   geometry: (Coordinate & { chainageM: number })[];
 }
 export interface Train {
+  active?: boolean;
+  version?: number;
   number: string;
   name: string;
   routeIds: string[];
 }
-export interface Schedule {
-  id: string;
-  trainNumber: string;
-  routeId: string;
-  direction: string;
-  scheduledTime: string;
-}
+export type Schedule = ScheduleConfiguration;
 export interface Journey {
+  journeyId: string;
+  businessKey: string;
+  schemaVersion: 2;
+  createdAt: number;
+  simulated: boolean;
+  trainSnapshot: Train;
+  routeSnapshot: RouteConfiguration;
+  scheduleSnapshot: ScheduleConfiguration;
+  routePointSnapshots: JourneyRoutePoint[];
   id: string;
   trainNumber: string;
   serviceDate: string;
@@ -48,17 +61,19 @@ export interface Journey {
   departureMs: number;
   expiresAt: number;
   route: Route;
-  status: "scheduled" | "active" | "completed";
+  status: "SCHEDULED" | "READY" | "RUNNING" | "COMPLETED" | "CANCELLED";
 }
 export interface GpsPing extends Coordinate {
   journeyId: string;
   deviceId: string;
-  source: "primary" | "phone";
+  source: "DEDICATED_GNSS_CELLULAR" | "OPERATOR_PHONE" | "SIMULATOR";
   timestamp: number;
   sequence: number;
   accuracyM: number;
 }
 export interface StationPrediction {
+  delaySeconds: number;
+  confidence: number;
   pointId: string;
   scheduledMs: number;
   etaMs: number;
@@ -66,6 +81,14 @@ export interface StationPrediction {
   passed: boolean;
 }
 export interface LiveState extends Coordinate {
+  speedKph: number;
+  smoothedSpeedKph: number;
+  speedSamples: { timestamp: number; speedKph: number }[];
+  heading: number;
+  accuracyMeters: number;
+  confidence: number;
+  routeDeviationMeters: number;
+  gpsStatus: "VALID" | "LOW_CONFIDENCE" | "STALE";
   journeyId: string;
   timestamp: number;
   sequence: number;
@@ -84,23 +107,31 @@ export interface Passenger {
   phone: string;
 }
 export interface Ticket {
+  ticketId: string;
+  PNR: string;
+  trainNumber: string;
+  passengerName: string;
+  phone: string;
+  destinationPointId: string;
   id: string;
   journeyId: string;
   passengerId: string;
   boardingPointId: string;
-  status: "confirmed" | "cancelled";
+  status: "CONFIRMED" | "CANCELLED";
 }
 export interface Subscription {
+  subscriptionId?: string;
   id: string;
   journeyId: string;
   boardingPointId: string;
   passengerId: string;
   phone: string;
-  source: "ticket" | "manual";
+  source: "TICKET" | "MANUAL" | "ADMIN";
   expiresAt: number;
   active: boolean;
 }
 export interface Notification {
+  notificationType: "DELAY_ALERT";
   id: string;
   journeyId: string;
   subscriptionId: string;
@@ -112,6 +143,14 @@ export interface Notification {
   status: "mock_sent";
 }
 export interface Thresholds {
+  timestampToleranceMs: number;
+  recentSpeedWindowMs: number;
+  etaMinFactor: number;
+  etaMaxFactor: number;
+  notificationsEnabled: boolean;
+  mockSmsEnabled: boolean;
+  gpsMinIntervalMs: number;
+  backwardToleranceMeters: number;
   delayMinutes: number;
   primaryStaleMs: number;
   maxAccuracyM: number;
@@ -119,9 +158,10 @@ export interface Thresholds {
   maxSpeedKmh: number;
 }
 export interface Device {
+  trainNumber?: string;
   id: string;
   journeyId: string;
-  source: "primary" | "phone";
+  source: "DEDICATED_GNSS_CELLULAR" | "OPERATOR_PHONE" | "SIMULATOR";
   active: boolean;
   operatorUid?: string;
   keyHash?: string;
@@ -145,9 +185,19 @@ export interface EtaProvider {
     journey: Journey,
     chainageM: number,
     timestamp: number,
+    speedKph?: number,
+    config?: Thresholds,
   ): StationPrediction[];
 }
 export const defaults: Thresholds = {
+  timestampToleranceMs: 60000,
+  recentSpeedWindowMs: 300000,
+  etaMinFactor: 0.75,
+  etaMaxFactor: 1.5,
+  notificationsEnabled: true,
+  mockSmsEnabled: true,
+  gpsMinIntervalMs: 1000,
+  backwardToleranceMeters: 100,
   delayMinutes: 10,
   primaryStaleMs: 120000,
   maxAccuracyM: 100,
@@ -168,5 +218,23 @@ export function journeyId(
     !/^[a-zA-Z0-9-]+$/.test(route + direction)
   )
     throw new Error("Invalid journey identity");
-  return [train, date, time.replace(":", ""), route, direction].join("_");
+  return [train, date, time.replace(":", ""), route, direction].join("__");
+}
+
+export type GpsValidationStatus =
+  "VALID" | "LOW_CONFIDENCE" | "REJECTED" | "STALE";
+export type JourneyEventType =
+  | "JOURNEY_STARTED"
+  | "JOURNEY_COMPLETED"
+  | "GPS_LOST"
+  | "GPS_RECOVERED"
+  | "GPS_SOURCE_SWITCHED"
+  | "STATION_REACHED"
+  | "STATION_DEPARTED"
+  | "DELAY_THRESHOLD_CROSSED";
+export interface JourneyEvent {
+  type: JourneyEventType;
+  recordedAt: number;
+  pointId?: string | null;
+  inferred?: boolean;
 }

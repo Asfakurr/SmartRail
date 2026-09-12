@@ -1,6 +1,6 @@
 {
   "name": "smartrail-bd",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "packageManager": "pnpm@11.19.0",
   "scripts": {
@@ -9,7 +9,7 @@
     "typecheck": "tsc --noEmit && tsc -p functions/tsconfig.json --noEmit",
     "test": "tsx --test tests/*.test.ts",
     "functions:build": "tsc -p functions/tsconfig.json",
-    "emulators": "pnpm functions:build && firebase emulators:start --project demo-smartrail-bd",
+    "emulators": "pnpm functions:build && firebase emulators:start --project demo-smartrail-bd --import=.emulator-data --export-on-exit=.emulator-data",
     "seed": "tsx scripts/seed.ts",
     "test:emulators": "pnpm functions:build && firebase emulators:exec --project demo-smartrail-bd --only auth,firestore,database,functions 'tsx scripts/integration.ts'",
     "simulate": "tsx scripts/simulate.ts",
