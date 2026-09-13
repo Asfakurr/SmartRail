@@ -322,6 +322,31 @@ function JourneyView({
     ];
     return () => stops.forEach((stop) => stop());
   }, [isAdmin, journey.id]);
+  useEffect(() => {
+    if (!firebaseMode) return;
+    setManualId("");
+    if (!user) return;
+    return onSnapshot(
+      query(
+        collection(firebaseClient().firestore, "subscriptions"),
+        where("passengerId", "==", user.uid),
+      ),
+      (snapshot) => {
+        const owned = snapshot.docs
+          .map((d) => d.data() as Subscription)
+          .find(
+            (s) =>
+              s.source === "MANUAL" &&
+              s.journeyId === journey.id &&
+              s.boardingPointId === station &&
+              s.active &&
+              s.expiresAt > Date.now(),
+          );
+        setManualId(owned?.id || "");
+      },
+      (e) => setError(e.message),
+    );
+  }, [user, journey.id, station]);
   async function step(wait = false) {
     if (firebaseMode) {
       try {

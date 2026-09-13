@@ -28,7 +28,7 @@ Firebase is the default mode. `.env.example` supplies local project/API settings
 
 Sign into **Prototype operations** with emulator-only `admin@smartrail.test` / `DemoRail2026!`. Seed creates/reuses train 701, route `dhaka-bhairab-demo`, schedule `701-0800`, and today's Dhaka service journey from saved configuration.
 
-Import fake tickets, then use **Step/Run** and **+12 min hold** on the passenger view. Check **Notifications** for automatic boarding-station alerts without duplicates. Manual subscriptions accept fake `+880100000xxxx` numbers; cancel in the same page session. Existing journeys retain progress and alerts; create a fresh service-date journey for a repeat demo.
+Import fake tickets, then use **Step/Run** and **+12 min hold** on the passenger view. Check **Notifications** for automatic boarding-station alerts without duplicates. Manual subscriptions accept fake `+880100000xxxx` numbers; cancellation is restored after refresh when the same journey and boarding station are selected. Existing journeys retain progress and alerts; create a fresh service-date journey for a repeat demo.
 
 CLI alternative (imports tickets and includes a hold automatically):
 
@@ -43,6 +43,6 @@ pnpm test
 pnpm typecheck
 ```
 
-The checkpoint passed 13 unit tests and both TypeScript checks. Full emulator integration and a v0.2 production build are documented follow-up checks, not claimed fresh passes. Threshold behavior was preserved unchanged.
+Stabilization passed the expanded emulator integration suite, 13 unit tests, both TypeScript checks, and the production build. Browser checks verified the live map and cancellation after refresh. The local simulated MVP v0.1 scope is stable; the package retains its existing 0.2.0 internal version. Threshold behavior was preserved unchanged. See the handoff for verified direct-command fallbacks if this workstation’s pnpm wrapper attempts registry access.
 
 No real SMS, official railway integration, production MQTT or ML is included. Route geometry and distances are illustrative demo fixtures. The previously hosted preview is older than this local Firebase MVP.

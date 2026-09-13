@@ -471,21 +471,32 @@ export const api = onRequest(
         await admin(req.headers.authorization);
         if (!demoEnabled()) throw new Error("Mock data is disabled");
         const id = idSchema.parse(req.body.journeyId);
-        const snap = await db.doc(`journeys/${id}`).get();
-        if (!snap.exists) throw new Error("Journey missing");
-        const journey = snap.data() as Journey;
-        if (["COMPLETED", "CANCELLED"].includes(journey.status))
-          throw new Error("Journey is closed");
-        const batch = db.batch();
-        passengers.forEach((p) => batch.set(db.doc(`passengers/${p.id}`), p));
-        makeTickets(journey).forEach((t) =>
-          batch.set(db.doc(`mockTickets/${t.id}`), t),
-        );
-        ticketSubscriptions(journey).forEach((s) =>
-          batch.set(db.doc(`subscriptions/${s.id}`), s),
-        );
-        await batch.commit();
-        res.json({ tickets: makeTickets(journey) });
+        const tickets = await db.runTransaction(async (tx) => {
+          const snap = await tx.get(db.doc(`journeys/${id}`));
+          if (!snap.exists) throw new Error("Journey missing");
+          const journey = snap.data() as Journey;
+          if (
+            journey.expiresAt < Date.now() ||
+            ["COMPLETED", "CANCELLED"].includes(journey.status)
+          )
+            throw new Error("Journey is closed");
+          const existing = await tx.get(
+            db.collection("subscriptions").where("journeyId", "==", id),
+          );
+          const subs = ticketSubscriptions(journey);
+          const existingIds = new Set(existing.docs.map((d) => d.id));
+          if (
+            existing.size + subs.filter((s) => !existingIds.has(s.id)).length >
+            100
+          )
+            throw new Error("Prototype subscription capacity exceeded");
+          const tickets = makeTickets(journey);
+          passengers.forEach((p) => tx.set(db.doc(`passengers/${p.id}`), p));
+          tickets.forEach((t) => tx.set(db.doc(`mockTickets/${t.id}`), t));
+          subs.forEach((s) => tx.set(db.doc(`subscriptions/${s.id}`), s));
+          return tickets;
+        });
+        res.json({ tickets });
         return;
       }
       if (path === "/subscribe") {
@@ -500,35 +511,36 @@ export const api = onRequest(
           .parse(req.body);
         if (!demoEnabled())
           throw new Error("Only fake prototype subscriptions are enabled");
-        const journey = (
-          await db.doc(`journeys/${input.journeyId}`).get()
-        ).data() as Journey | undefined;
-        if (
-          !journey ||
-          journey.expiresAt < Date.now() ||
-          ["COMPLETED", "CANCELLED"].includes(journey.status) ||
-          !journey.route.points.some(
-            (p) => p.id === input.boardingPointId && p.passengerBoardingAllowed,
-          )
-        )
-          throw new Error("Invalid boarding station or expired journey");
         const id = hash(
           `${input.journeyId}:${input.boardingPointId}:${user.uid}`,
         );
-        const subscription: Subscription = {
-          ...input,
-          id,
-          passengerId: user.uid,
-          source: "MANUAL",
-          expiresAt: journey.expiresAt,
-          active: true,
-        };
         await db.runTransaction(async (tx) => {
+          const journey = (
+            await tx.get(db.doc(`journeys/${input.journeyId}`))
+          ).data() as Journey | undefined;
+          if (
+            !journey ||
+            journey.expiresAt < Date.now() ||
+            ["COMPLETED", "CANCELLED"].includes(journey.status) ||
+            !journey.route.points.some(
+              (p) =>
+                p.id === input.boardingPointId && p.passengerBoardingAllowed,
+            )
+          )
+            throw new Error("Invalid boarding station or expired journey");
           const existing = await tx.get(
             db.collection("subscriptions").where("journeyId", "==", journey.id),
           );
-          if (existing.size >= 100)
+          if (existing.size >= 100 && !existing.docs.some((d) => d.id === id))
             throw new Error("Prototype subscription capacity exceeded");
+          const subscription: Subscription = {
+            ...input,
+            id,
+            passengerId: user.uid,
+            source: "MANUAL",
+            expiresAt: journey.expiresAt,
+            active: true,
+          };
           tx.set(db.doc(`subscriptions/${id}`), subscription);
         });
         res.json({ id });

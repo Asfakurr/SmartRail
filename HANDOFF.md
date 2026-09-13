@@ -1,4 +1,4 @@
-# SmartRail BD MVP checkpoint — 2026-09-12
+# SmartRail BD stable MVP checkpoint — 2026-09-13
 
 Resume from this repository, not from a new scaffold. Feature development is paused at the user's request. This handoff supersedes outdated v0.1 run instructions in docs/ARCHITECTURE.md, docs/API.md and docs/VALIDATION.md where they conflict. No threshold behavior was changed or separately validated during checkpoint completion.
 
@@ -14,13 +14,18 @@ The interrupted session left v0.2 implementation changes uncommitted, no HANDOFF
 - Fake ticket import automatically creates temporary unified subscriptions. Manual subscribe/cancel endpoints exist. Station-specific eligibility and deterministic atomic notification IDs prevent repeated Mock SMS. No telecom provider is contacted.
 - Journey GPS/prediction history and events, stale-source service, lifecycle handling and security rules are implemented. Client writes to authoritative live/prediction/notification data are denied.
 
-## Tests and evidence
+## Stabilization results — current
 
-Checkpoint smoke checks: **13/13 unit tests passed**, frontend TypeScript check passed, Functions TypeScript check passed. The initial tsx CLI invocation hit a sandbox IPC permission error; equivalent `node --import tsx --test tests/*.test.ts` passed. No application fix was needed.
+Resumed from `851d906`; no new features or threshold changes. The existing MVP scope is verified as **MVP v0.1 stable for local simulated demonstrations**. The package's existing internal version remains 0.2.0; it was not renumbered.
 
-Prior session reported a successful emulator integration run covering snapshots, concurrent journey creation, GPS authentication/replay/fallback, RTDB projection, mock alerts/deduplication, stale recovery, completion and rules. Browser checks passed admin login, ticket import, moving map, hold-triggered alerts, master editor and immediate manual subscribe/cancel. These are previous-session results, not a fresh end-to-end run.
+- Ticket import and manual subscription creation now read journey status inside their write transactions, preventing creation/reactivation after concurrent completion. Ticket import checks combined capacity; updating an existing manual identity at capacity remains allowed.
+- The passenger view listens for the authenticated user's own subscriptions and restores the cancellation control for the selected journey/boarding station after refresh.
+- **Integration PASS:** fresh isolated emulator suite, including master snapshots, same-day services, GPS security/replay/fallback, station ETA, RTDB projection, delay alerts, repeated-update deduplication, cancellation, lifecycle, history and rules. Added regressions cover concurrent completion/import/manual subscribe, post-completion rejection and the 100-subscription boundary.
+- **Unit tests: 13/13 PASS. Frontend TypeScript: PASS. Functions TypeScript: PASS. Production build: PASS**, static routes `/` and `/_not-found` exported successfully.
+- Browser PASS: saved journey selection, rendered Leaflet/OpenStreetMap with orange train marker, backend STEP producing 1.8 km/2% progress and station predictions, manual subscription restored after reload and cancelled successfully. CLI simulator completed today's route with a hold; operations showed two ticket alerts after repeated updates.
+- An initial new race-test failure was caused by floating-point chainage advancing the fixture one step beyond completion. The test setup was corrected; final expanded integration rerun passed.
 
-Some later lifecycle/subscription changes and added integration assertions have only been typechecked; their full emulator rerun remains pending. v0.2 production build remains pending (v0.1 build previously passed). HTTP probes could not reach frontend/emulator hub in the checkpoint session; services are not confirmed running. No broad tests or reset were performed.
+Demo data was exported before integration testing; tests ran without importing or overwriting that export. An orphaned Firestore process was separately backed up at `/private/tmp/smartrail-orphan-backup` and stopped by the user. No production services were contacted or deployed.
 
 ## Exact local startup
 
@@ -73,7 +78,7 @@ Environment: `.env.example` lists public demo Firebase settings, project `demo-s
 - Train `701`, SmartRail Demo Express; route `dhaka-bhairab-demo`, outbound, 91,000 configured demo metres.
 - Points: Dhaka origin, Tejgaon pass-through, Biman Bandar (`airport`) passenger halt, Tongi crossing, Narsingdi passenger halt, Bhairab destination.
 - Schedule `701-0800`, daily 08:00 Asia/Dhaka. Seed uses today's Dhaka service date.
-- Last recorded demo journey: `zukctt3DjvWs7IHpS0Li`, 2026-09-12; business key `701__2026-09-12__0800__dhaka-bhairab-demo__outbound`. Inspect the imported data or seed output for the currently selected journey; do not hardcode this ID.
+- Completed demo journey: `w0sqA61uaUVhzaiWysCq`, 2026-09-13; business key `701__2026-09-13__0800__dhaka-bhairab-demo__outbound`. A fresh 2026-09-14 journey `I88yWKVbicBpROsji0Eg` is saved at 1.8 km with its manual test subscription cancelled. Inspect the imported data or seed output for the currently selected journey; do not hardcode this ID.
 - Devices: `demo-gnss` SIMULATOR, `demo-primary` DEDICATED_GNSS_CELLULAR, `demo-phone` OPERATOR_PHONE. Operator `demo-operator` is assigned train 701.
 - Local-only login: `admin@smartrail.test` / `DemoRail2026!`; operator login `operator@smartrail.test` / `DemoRail2026!`. The seed's device key is an emulator fixture, not a production credential.
 
@@ -91,7 +96,7 @@ The script signs into emulator Auth, creates/reuses today's `701-0800` journey, 
 
 To verify Mock SMS: inspect **Notifications** and Firestore `notifications`. Eligible future boarding stations produce one DELAY_ALERT per normalized phone + boarding station + journey. Continue repeated steps/holds and confirm no duplicate for that recipient key. Already-passed boarding stations must not receive new alerts. The saved prior demo had two alerts; use a fresh journey to observe new ones. Delay configuration is left as-is and is read from `systemConfig/global`; this checkpoint makes no claim about a newly verified numeric value.
 
-Manual workflow: select a future boarding point, enter a fake number matching `+880100000xxxx`, subscribe, then cancel using the displayed control. Anonymous Auth is used if not already signed in. Verify the MANUAL subscription becomes inactive and receives no subsequent alert. Cancel immediately in the same page session: the current UI loses its newly created subscription ID on refresh. API cancellation of an owned subscription remains available.
+Manual workflow: select a future boarding point, enter a fake number matching `+880100000xxxx`, subscribe, then cancel using the displayed control. Anonymous Auth is used if not already signed in. Verify the MANUAL subscription becomes inactive and receives no subsequent alert. Refresh the page and select the same journey and boarding point: the cancellation control is restored from the authenticated user’s saved subscriptions. Cancel it and verify it remains inactive. API cancellation is restricted to an owned MANUAL subscription.
 
 ## URLs and storage
 
@@ -123,11 +128,10 @@ deviceCheckpoints/{deviceId}_{journeyId}
 
 RTDB: `/liveJourneys/{journeyId}/position`, `/tracking`, `/progress`, `/stationPredictions/{routePointId}`, plus projection revision/completion metadata. Configuration includes delay, GPS tolerances, primary stale timeout, recent-speed adjustment and notification/mock flags. Keep existing settings unchanged for this checkpoint.
 
-## Known issues, scope differences and next step
+## Remaining scope limitations
 
-1. **Next recommended task:** rerun the existing emulator integration suite on an isolated suite, then address ticket/manual-subscription races with journey completion. Both flows read journey status outside their eventual write transaction; concurrent completion can leave an active subscription. Ticket import also needs subscription-capacity boundary review. Do not add features first.
-2. Manual cancellation UI remembers only the most recently created subscription in page state; refresh recovery is unfinished.
-3. Final lifecycle assertions (READY/CANCELLED, same-day additional schedule, completion deactivation) were added after the last integration run. Production build/browser regression after those edits remains pending.
+The previously documented subscription/completion races and refresh cancellation issue are fixed and verified. No known blocking failure remains in the tested simulated MVP pipeline. Remaining scope limitations follow; they are not completed production features.
+
 4. Firestore `liveInternal` duplicates live processing state to provide a durable atomic transaction boundary; RTDB remains the public live projection. This is a deliberate MVP difference from a purely RTDB processing design.
 5. Geometry/chainage are illustrative configured fixtures, not surveyed Bangladesh railway track data. Point-crossing events are inferred from samples rather than independently observed station halts.
 6. Full admin CRUD, geometry import UI, device/operator provisioning UI and phone GPS capture UI are unfinished. Current master editor edits a subset and increments route/schedule versions together. Legacy v1 documents are preserved; UI selects schemaVersion 2, with no general migration implemented.
@@ -148,4 +152,27 @@ pnpm build
 pnpm test:emulators
 ```
 
-Restricted-shell alternative for the unit runner: `node --import tsx --test tests/*.test.ts`. Do not run integration against demo data you intend to preserve. No Phase 2 work is authorized by the checkpoint request.
+Restricted-shell alternative for the unit runner: `node --import tsx --test tests/*.test.ts`. Do not run integration against demo data you intend to preserve. Stop after stabilization. Phase 2 requires an explicit new request.
+
+## Workstation command fallback verified in this session
+
+This workstation's pnpm wrapper tried registry/supply-chain checks even with dependencies installed, and the original sandboxed invocation failed DNS resolution. The following commands run the same installed script entry points without reinstalling dependencies. They were used successfully for stabilization; keep the PATH/cache settings above. Use polling to avoid macOS watcher-limit errors.
+
+```sh
+# Terminal 1
+node node_modules/typescript/bin/tsc -p functions/tsconfig.json
+node node_modules/firebase-tools/lib/bin/firebase.js emulators:start --project demo-smartrail-bd --only auth,firestore,database,functions --import=.emulator-data --export-on-exit=.emulator-data
+# Terminal 2
+node --import tsx scripts/seed.ts
+WATCHPACK_POLLING=true node node_modules/next/dist/bin/next dev --webpack --hostname 127.0.0.1 --port 3010
+# Terminal 3, optional
+node --import tsx scripts/simulate.ts
+# Verification; stop the demo emulator suite cleanly before the integration command
+node --import tsx --test tests/*.test.ts
+node node_modules/typescript/bin/tsc --noEmit
+node node_modules/typescript/bin/tsc -p functions/tsconfig.json --noEmit
+node node_modules/next/dist/bin/next build --webpack
+node node_modules/firebase-tools/lib/bin/firebase.js emulators:exec --project demo-smartrail-bd --only auth,firestore,database,functions 'node --import tsx scripts/integration.ts'
+```
+
+Tests/build were executed with the installed Node 24.19 runtime; deployment runtime remains Node 22. Scheduled stale detection still requires scheduler/PubSub support and was tested through its service directly. The emulator warns about that omitted scheduled wrapper; this does not affect the manually driven MVP pipeline. Avoid simultaneous dev/build commands because Next writes generated output. Native date fields may require keyboard input to commit a date during browser automation; filling alone did not update React state in this browser tool.

@@ -323,6 +323,40 @@ async function main() {
   assert.notEqual(second.id, future.id);
   assert.equal(second.serviceDate, future.serviceDate);
   assert.notEqual(second.businessKey, future.businessKey);
+  // Capacity includes ticket-created subscriptions; updates to an existing identity remain idempotent.
+  const capacity = db.batch();
+  for (let i = 0; i < 99; i++)
+    capacity.set(db.doc(`subscriptions/capacity-${i}`), {
+      id: `capacity-${i}`,
+      journeyId: second.id,
+      passengerId: `capacity-${i}`,
+      phone: "+8801000000099",
+      boardingPointId: "airport",
+      source: "MANUAL",
+      active: true,
+      expiresAt: second.expiresAt,
+    });
+  await capacity.commit();
+  assert.equal(
+    (await call("/mock-tickets", { journeyId: second.id }, auth)).status,
+    400,
+  );
+  const atCapacity = {
+    journeyId: second.id,
+    boardingPointId: "narsingdi",
+    phone: "+8801000000097",
+  };
+  await post("/subscribe", atCapacity);
+  await post("/subscribe", atCapacity);
+  assert.equal(
+    (
+      await db
+        .collection("subscriptions")
+        .where("journeyId", "==", second.id)
+        .get()
+    ).size,
+    100,
+  );
   await post("/journey-status", { journeyId: second.id, status: "READY" });
   await post("/journey-status", { journeyId: second.id, status: "CANCELLED" });
   assert.equal(
@@ -402,14 +436,46 @@ async function main() {
     "DELAY_THRESHOLD_CROSSED",
   ])
     assert.ok(events.includes(type), type);
-  // Complete the journey; subscriptions cannot produce additional alerts after completion.
-  for (let i = 0; i < 50; i++) {
-    const { live } = await post("/simulate", {
-      journeyId: future.id,
-      action: "STEP",
-    });
-    if (live.completed) break;
+  // Race subscriptions/import against the last GPS update that completes the journey.
+  while (
+    (await db.doc(`liveInternal/${future.id}`).get()).data()!.chainageM < 89000
+  ) {
+    await post("/simulate", { journeyId: future.id, action: "STEP" });
   }
+  const racing = await Promise.all([
+    call("/simulate", { journeyId: future.id, action: "STEP" }, auth),
+    call("/mock-tickets", { journeyId: future.id }, auth),
+    call(
+      "/subscribe",
+      {
+        journeyId: future.id,
+        boardingPointId: "narsingdi",
+        phone: "+8801000000098",
+      },
+      auth,
+    ),
+  ]);
+  assert.equal(racing[0].status, 200, await racing[0].text());
+  for (const result of racing.slice(1))
+    assert.ok([200, 400].includes(result.status));
+  assert.equal(
+    (await call("/mock-tickets", { journeyId: future.id }, auth)).status,
+    400,
+  );
+  assert.equal(
+    (
+      await call(
+        "/subscribe",
+        {
+          journeyId: future.id,
+          boardingPointId: "narsingdi",
+          phone: "+8801000000098",
+        },
+        auth,
+      )
+    ).status,
+    400,
+  );
   assert.equal(
     (await db.doc(`journeys/${future.id}`).get()).data()?.status,
     "COMPLETED",
