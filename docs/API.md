@@ -1,5 +1,7 @@
 # API contract
 
+> Historical phase notes. See the [current README](../README.md) for the Phase 2.1 baseline and [demo guide](DEMO_GUIDE.md) for current local commands. Later implementation supersedes earlier deferred-work, verification and API/schema statements below.
+
 Cloud Functions base: `https://asia-south1-PROJECT.cloudfunctions.net/api`.
 Local base: `http://127.0.0.1:5001/demo-smartrail-bd/asia-south1/api`.
 All operations use POST with JSON, with a small payload limit. Errors use `{ "error": "..." }` and 400, 401, 403, 404 or 405 status.

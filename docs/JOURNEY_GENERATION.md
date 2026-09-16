@@ -1,5 +1,7 @@
 # Phase 2.1 Prompt 1B — automatic journey reconciliation
 
+> Historical phase notes. See the [current README](../README.md) for the Phase 2.1 baseline and [demo guide](DEMO_GUIDE.md) for current local commands. Later implementation supersedes earlier deferred-work, verification and API/schema statements below.
+
 Uses the Prompt 1A foundation without migrating timetables or replacing manual creation. No deployment or Git commit is performed by this implementation session.
 
 ## Entry points

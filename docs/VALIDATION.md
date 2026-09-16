@@ -1,5 +1,7 @@
 # Validation record
 
+> Historical phase notes. See the [current README](../README.md) for the Phase 2.1 baseline and [demo guide](DEMO_GUIDE.md) for current local commands. Later implementation supersedes earlier deferred-work, verification and API/schema statements below.
+
 Validated locally on 10 September 2026. Host runtime: Node 24.19.0, Java 23. Deployment target: Cloud Functions Node 22. Node 22 itself was not available on this host; rerun in Node 22 CI before production deployment.
 
 - Nine domain tests passed: same-day identity, invalid date, chainage consistency, station ETA/dwell, duplicate recipient overlap, thresholds/expiry/passed stations, rejected GPS, stale-primary fallback/recovery, journey completion and strict simulator endpoint envelopes.

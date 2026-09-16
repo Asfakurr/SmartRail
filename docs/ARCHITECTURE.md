@@ -1,5 +1,7 @@
 # SmartRail BD — architecture baseline v0.1
 
+> Historical phase notes. See the [current README](../README.md) for the Phase 2.1 baseline and [demo guide](DEMO_GUIDE.md) for current local commands. Later implementation supersedes earlier deferred-work, verification and API/schema statements below.
+
 SmartRail BD is an independent academic intelligence/service layer. It does not operate trains, sell tickets, represent Bangladesh Railway, or claim an official railway connection. The available reference conversation was truncated; the detailed implementation request is the architectural source of truth.
 
 ## Scope and implemented pipeline

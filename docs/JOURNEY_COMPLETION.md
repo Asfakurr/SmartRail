@@ -42,19 +42,7 @@ Passenger status shows Scheduled, Awaiting Departure, Tracking active, Journey C
 
 ## Local generated demo
 
-Use the existing startup commands from HANDOFF.md:
-
-```sh
-pnpm emulators
-pnpm seed
-pnpm dev --port 3010
-```
-
-Open http://127.0.0.1:3010 and sign in under Prototype operations with the local fake admin (`admin@smartrail.test`, `DemoRail2026!`). The original `pnpm simulate` still runs the legacy manual MVP demo; use the UI simulator for a generated service.
-
-For a local generated service, invoke the existing admin `/reconcile-journeys` endpoint with today's Asia/Dhaka serviceDate. This endpoint only generates eligible saved schedules; it does not advance journeys to READY. Local rehearsal must also invoke the backend readiness reconciliation service against the emulator before demonstrating Start. The scheduled `reconcileJourneyOperations()` path combines generation and readiness, but Cloud Scheduler's 15-minute cadence does not run automatically in the local emulator. For a controlled demonstration at any wall-clock time, the integration suite below invokes the same generation/readiness services with a test clock; no production clock override endpoint was added.
-
-Select the generated service in the journey dropdown. A saved schedule more than 30 minutes in the future remains SCHEDULED; choose an eligible current/due service for READY. Import mock tickets before movement. Click Run on the passenger map: the first two steps provide departure evidence, a +12 min hold introduces delay, and two destination fixes complete the journey. Alternatively use Start then Complete in operations. Use another generated service to show cancellation. Do not change terminal history to replay: create/use another saved schedule or service date.
+Follow the [current demo guide](DEMO_GUIDE.md) for exact startup, current-time saved configuration, generation-only reconciliation, explicit local READY reconciliation, simulator/ticket/SMS steps and terminal-state checks. Cloud Scheduler cadence does not execute automatically in local emulators. `pnpm simulate` remains the manual MVP CLI path.
 
 ## Isolated verification
 
@@ -72,10 +60,10 @@ pnpm build
 
 Installed-binary/workstation fallbacks remain in HANDOFF.md. The completion suite covers saved master -> generated SCHEDULED -> READY -> simulated RUNNING -> live RTDB/progress/ETA/deduplicated ticket SMS -> COMPLETED, plus manual fallback, cancellations, device reuse, immutable snapshots, stale non-completion, authorization and concurrent auto/manual/Cancel/subscription races.
 
-## Verification result — 2026-09-15
+## Current recorded verification
 
-57/57 unit tests PASS; generation, readiness/lifecycle, GPS-start, new completion/cancellation, and legacy MVP integrations all PASS in separate empty emulator suites. Backend/frontend TypeScript and production build/static export PASS. Local HTTP smoke: 200.
+Baseline `8cb2e54`: 57/57 unit tests PASS; generation, lifecycle, GPS-start and original MVP integrations PASS in isolated emulator databases. Backend/frontend TypeScript and production build/static export PASS. Visual rehearsal PASS, including admin Start/Complete/Cancel, passenger terminal state, subscription cleanup, Mock SMS deduplication and device reuse. The earlier browser suspension was resolved for rehearsal.
 
-The in-app browser returned ERR_NETWORK_IO_SUSPENDED, so interactive admin-button/confirmation and passenger refresh/visual verification could not be completed. Status/action mappings are covered by focused unit tests; final visual rehearsal remains necessary before submission. The disposable UI test emulator and dev server were stopped; existing demo exports are untouched.
+The completion/cancellation integration suite is **not consistently green**: its `demoMaster("08:00")` fixture uses today's date, while ticket import checks real-clock expiry. A later rerun failed with `Journey is closed` at fake ticket import. The fixture remains unchanged. This result must not be reported as an unconditional integration PASS; use the current-time demo guide for rehearsal.
 
-No known blocking failure remains in the tested backend flow. Prototype limitations: illustrative railway geometry, conservative completion may require manual fallback, no cancellation SMS, and scheduler cadence is not deployed/automatically exercised locally. Node 24.19 was used for verification; configured deployment runtime remains Node 22. No commit or deployment performed.
+Prototype boundaries include illustrative geometry, conservative completion/manual fallback, no cancellation SMS and no locally automatic or deployed scheduler cadence. Verification used Node 24.19; the configured Functions target remains Node 22. This documentation update did not rerun tests or deploy anything.

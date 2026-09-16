@@ -1,5 +1,7 @@
 # Phase 2.1 Prompt 1A — schedule foundation
 
+> Historical phase notes. See the [current README](../README.md) for the Phase 2.1 baseline and [demo guide](DEMO_GUIDE.md) for current local commands. Later implementation supersedes earlier deferred-work, verification and API/schema statements below.
+
 Pure utilities only; no automatic journey generator, scheduled job or new lifecycle behavior. Starting checkpoint: 6798eb5. Changes are intentionally uncommitted.
 
 ## Model

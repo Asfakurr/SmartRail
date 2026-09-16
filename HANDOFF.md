@@ -1,8 +1,10 @@
 # SmartRail BD stable MVP checkpoint — 2026-09-13
 
-**Latest working tree (2026-09-15):** Phase 2.1 generated lifecycle is implemented through completion/cancellation, intentionally uncommitted on baseline `6798eb5`. See [completion and demo instructions](docs/JOURNEY_COMPLETION.md). The working tree includes schedule/date foundation, generation/reconciliation, readiness, GPS/admin start, conservative GPS completion, admin Complete/Cancel, transactional subscription/device cleanup and minimal lifecycle UI. Automated verification: 57/57 unit tests, all five isolated integration suites, backend/frontend TypeScript and production build passed. HTTP smoke returned 200. Interactive browser verification remains outstanding: the in-app browser failed with `ERR_NETWORK_IO_SUSPENDED` despite the local server responding normally; status/action mappings are unit-tested, but visual controls/refresh were not reverified this session. No commit, deployment or later-phase work. Test emulators used empty isolated databases; the existing `.emulator-data` export was not touched.
+**Current baseline:** Phase 2.1 is committed at `8cb2e54` (`feat: complete Phase 2.1 journey lifecycle automation`) on `main`, tracking `origin/main`. The visual rehearsal is complete. Use the [README](README.md), [current demo guide](docs/DEMO_GUIDE.md) and [submission checklist](docs/SUBMISSION_CHECKLIST.md) for submission preparation.
 
-Resume from this repository, not from a new scaffold. Stop after this Phase 2.1 scope; final visual demo rehearsal is the remaining verification step. This handoff supersedes outdated v0.1 run instructions in docs/ARCHITECTURE.md, docs/API.md and docs/VALIDATION.md where they conflict. No threshold behavior was changed or separately validated during checkpoint completion.
+Recorded verification: 57/57 unit tests, generation/lifecycle/GPS-start/original MVP integrations, frontend/backend TypeScript and production build passed. Visual rehearsal passed, including completion/cancellation, terminal passenger state, subscriptions and device reuse. The final completion integration rerun exposed its fixed-today-08:00 fixture: real-clock ticket import can return `Journey is closed` after expiry. That fixture remains unchanged; do not claim this suite is consistently green. Use a current-time saved schedule for demonstrations.
+
+The sections below retain the historical MVP checkpoint and workstation recovery details. Their older test counts/status statements describe that earlier phase, not the current baseline. No application changes or test reruns are part of this documentation-only update.
 
 ## Saved state and working features
 
@@ -16,7 +18,7 @@ The interrupted session left v0.2 implementation changes uncommitted, no HANDOFF
 - Fake ticket import automatically creates temporary unified subscriptions. Manual subscribe/cancel endpoints exist. Station-specific eligibility and deterministic atomic notification IDs prevent repeated Mock SMS. No telecom provider is contacted.
 - Journey GPS/prediction history and events, stale-source service, lifecycle handling and security rules are implemented. Client writes to authoritative live/prediction/notification data are denied.
 
-## Stabilization results — current
+## Historical MVP stabilization results
 
 Resumed from `851d906`; no new features or threshold changes. The existing MVP scope is verified as **MVP v0.1 stable for local simulated demonstrations**. The package's existing internal version remains 0.2.0; it was not renumbered.
 
@@ -27,14 +29,14 @@ Resumed from `851d906`; no new features or threshold changes. The existing MVP s
 - Browser PASS: saved journey selection, rendered Leaflet/OpenStreetMap with orange train marker, backend STEP producing 1.8 km/2% progress and station predictions, manual subscription restored after reload and cancelled successfully. CLI simulator completed today's route with a hold; operations showed two ticket alerts after repeated updates.
 - An initial new race-test failure was caused by floating-point chainage advancing the fixture one step beyond completion. The test setup was corrected; final expanded integration rerun passed.
 
-Demo data was exported before integration testing; tests ran without importing or overwriting that export. An orphaned Firestore process was separately backed up at `/private/tmp/smartrail-orphan-backup` and stopped by the user. No production services were contacted or deployed.
+Demo data was exported before integration testing; tests ran without importing or overwriting that export. An orphaned Firestore process was separately backed up locally and stopped by the user. No production services were contacted or deployed.
 
 ## Exact local startup
 
 Requirements: Node.js 22 LTS, pnpm 11.19, Java 21+. The existing machine previously ran Node 24.19 and Java 23. Dependencies are already installed here. No production Firebase credentials or billing are needed.
 
 ```sh
-cd /Users/asfakur/Documents/Codex/2026-09-10/referenced-chatgpt-conversation-this-is-an/outputs/smartrail-bd
+# Run from the repository root.
 # Only if dependencies are absent:
 pnpm install
 # Only if .env.local does not already exist; preserve existing local settings:
@@ -66,7 +68,7 @@ Seed is loopback-emulator-only and reuses saved master configuration and the bus
 If Node/pnpm are unavailable in this workstation shell, prepend the bundled runtimes in each terminal:
 
 ```sh
-export PATH="/Users/asfakur/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin:/Users/asfakur/.cache/codex-runtimes/codex-primary-runtime/dependencies/bin/fallback:$PATH"
+export PATH="$HOME/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin:$HOME/.cache/codex-runtimes/codex-primary-runtime/dependencies/bin/fallback:$PATH"
 export FIREBASE_EMULATORS_PATH=/private/tmp/smartrail-emulators
 export XDG_CONFIG_HOME=/private/tmp/smartrail-config
 ```
