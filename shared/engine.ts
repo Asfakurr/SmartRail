@@ -1,3 +1,4 @@
+import { READY_LEAD_MS } from "./lifecycle";
 import {
   defaults,
   type Coordinate,
@@ -157,8 +158,10 @@ export function ingest(
 ): LiveState {
   if (
     ["COMPLETED", "CANCELLED"].includes(journey.status) ||
-    now < journey.departureMs ||
-    now > journey.expiresAt ||
+    (journey.generationSource === "SCHEDULE"
+      ? !["READY", "RUNNING"].includes(journey.status) ||
+        now < journey.departureMs - READY_LEAD_MS
+      : now < journey.departureMs || now > journey.expiresAt) ||
     ping.journeyId !== journey.id
   )
     throw new Error("Journey is not active");

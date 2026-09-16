@@ -1,3 +1,4 @@
+import { getDhakaServiceDate } from "../shared/service-date";
 // The simulator sends admin-authorized commands; coordinates and virtual clock are computed on the backend.
 const base = "http://127.0.0.1:5001/demo-smartrail-bd/asia-south1/api";
 async function main() {
@@ -27,7 +28,7 @@ async function main() {
     if (!response.ok) throw new Error(result.error);
     return result;
   }
-  const date = new Date(Date.now() + 21600000).toISOString().slice(0, 10);
+  const date = getDhakaServiceDate(Date.now());
   const { journey } = await post("/journey", {
     scheduleId: "701-0800",
     serviceDate: date,

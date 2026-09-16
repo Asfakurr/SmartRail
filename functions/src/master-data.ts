@@ -60,34 +60,7 @@ export async function createFromSavedSchedule(
   const db = getFirestore(),
     id = db.collection("journeys").doc().id;
   return db.runTransaction(async (tx) => {
-    const scheduleDoc = await tx.get(db.doc(`schedules/${scheduleId}`));
-    if (!scheduleDoc.exists) throw new Error("Saved schedule missing");
-    const schedule = scheduleDoc.data() as ScheduleConfiguration;
-    const routeRef = db.doc(`routes/${schedule.routeId}`);
-    const [train, route, points, segments, geometry, timings] =
-      await Promise.all([
-        tx.get(db.doc(`trains/${schedule.trainNumber}`)),
-        tx.get(routeRef),
-        tx.get(routeRef.collection("points").orderBy("sequence")),
-        tx.get(routeRef.collection("segments").orderBy("sequence")),
-        tx.get(routeRef.collection("geometry").orderBy("sequence")),
-        tx.get(scheduleDoc.ref.collection("timings").orderBy("sequence")),
-      ]);
-    if (!train.exists || !route.exists)
-      throw new Error("Configure route and train before journey");
-    const bundle: MasterBundle = {
-      train: train.data() as Train,
-      route: {
-        ...route.data(),
-        points: points.docs.map((d) => d.data()),
-        segments: segments.docs.map((d) => d.data()),
-        geometry: geometry.docs.map((d) => d.data()),
-      } as RouteConfiguration,
-      schedule: {
-        ...schedule,
-        timings: timings.docs.map((d) => d.data()),
-      } as ScheduleConfiguration,
-    };
+    const bundle = await loadJourneyMaster(tx, scheduleId);
     const journey = createJourneySnapshot(bundle, serviceDate, id);
     const keyRef = db.doc(`journeyKeys/${journey.businessKey}`),
       key = await tx.get(keyRef);
@@ -99,10 +72,52 @@ export async function createFromSavedSchedule(
       return existing.data() as Journey;
     }
     tx.create(keyRef, { journeyId: id });
-    tx.create(db.doc(`journeys/${id}`), journey);
-    journey.routePointSnapshots.forEach((p) =>
-      tx.create(db.doc(`journeys/${id}/routePoints/${p.pointId}`), p),
-    );
+    writeJourneySnapshot(tx, journey);
     return journey;
   });
+}
+
+/** Shared transactional master read for manual and schedule-generated journeys. */
+export async function loadJourneyMaster(
+  tx: Transaction,
+  scheduleId: string,
+): Promise<MasterBundle> {
+  const db = getFirestore();
+  const scheduleDoc = await tx.get(db.doc(`schedules/${scheduleId}`));
+  if (!scheduleDoc.exists) throw new Error("Saved schedule missing");
+  const schedule = scheduleDoc.data() as ScheduleConfiguration;
+  const routeRef = db.doc(`routes/${schedule.routeId}`);
+  const [train, route, points, segments, geometry, timings] = await Promise.all(
+    [
+      tx.get(db.doc(`trains/${schedule.trainNumber}`)),
+      tx.get(routeRef),
+      tx.get(routeRef.collection("points").orderBy("sequence")),
+      tx.get(routeRef.collection("segments").orderBy("sequence")),
+      tx.get(routeRef.collection("geometry").orderBy("sequence")),
+      tx.get(scheduleDoc.ref.collection("timings").orderBy("sequence")),
+    ],
+  );
+  if (!train.exists || !route.exists)
+    throw new Error("Configure route and train before journey");
+  return {
+    train: train.data() as Train,
+    route: {
+      ...route.data(),
+      points: points.docs.map((d) => d.data()),
+      segments: segments.docs.map((d) => d.data()),
+      geometry: geometry.docs.map((d) => d.data()),
+    } as RouteConfiguration,
+    schedule: {
+      ...schedule,
+      timings: timings.docs.map((d) => d.data()),
+    } as ScheduleConfiguration,
+  };
+}
+/** All journey and station snapshots are committed together. Call after all reads. */
+export function writeJourneySnapshot(tx: Transaction, journey: Journey): void {
+  const ref = getFirestore().doc(`journeys/${journey.id}`);
+  tx.create(ref, journey);
+  journey.routePointSnapshots.forEach((p) =>
+    tx.create(ref.collection("routePoints").doc(p.pointId), p),
+  );
 }

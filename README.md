@@ -46,3 +46,7 @@ pnpm typecheck
 Stabilization passed the expanded emulator integration suite, 13 unit tests, both TypeScript checks, and the production build. Browser checks verified the live map and cancellation after refresh. The local simulated MVP v0.1 scope is stable; the package retains its existing 0.2.0 internal version. Threshold behavior was preserved unchanged. See the handoff for verified direct-command fallbacks if this workstation’s pnpm wrapper attempts registry access.
 
 No real SMS, official railway integration, production MQTT or ML is included. Route geometry and distances are illustrative demo fixtures. The previously hosted preview is older than this local Firebase MVP.
+
+## Phase 2.1 generated lifecycle
+
+See [Journey completion and demo instructions](docs/JOURNEY_COMPLETION.md) for automatic generation through completion, admin Start/Complete/Cancel, destination thresholds, device release and all five isolated regression suites. Existing `pnpm emulators`, `pnpm seed`, `pnpm dev --port 3010` startup commands remain unchanged. The CLI `pnpm simulate` retains the manual MVP demo; select a generated journey and use the existing UI simulator for the generated lifecycle. Cloud Scheduler cadence is not automatically run by local emulators.

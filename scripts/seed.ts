@@ -1,3 +1,4 @@
+import { getDhakaServiceDate } from "../shared/service-date";
 import { initializeApp, getApps } from "firebase-admin/app";
 import { getAuth } from "firebase-admin/auth";
 import { getFirestore } from "firebase-admin/firestore";
@@ -85,9 +86,7 @@ export async function seed(
         trainNumbers: ["701"],
         active: true,
       });
-  const date =
-    options.serviceDate ||
-    new Date(Date.now() + 21600000).toISOString().slice(0, 10);
+  const date = options.serviceDate || getDhakaServiceDate(Date.now());
   return createFromSavedSchedule(bundle.schedule.scheduleId, date);
 }
 if (process.argv[1]?.endsWith("/seed.ts"))

@@ -43,6 +43,17 @@ export interface Train {
 }
 export type Schedule = ScheduleConfiguration;
 export interface Journey {
+  /** Absent on legacy/manual MVP journeys. */
+  generationSource?: "SCHEDULE";
+  statusUpdatedAt?: number; // epoch milliseconds; written only on a status change
+  transitionSource?: "SYSTEM_TIME" | "GPS_AUTO" | "ADMIN_MANUAL";
+  actualArrivalAt?: number;
+  cancelledAt?: number;
+  cancellationReason?: string;
+  cancelledBy?: string;
+  actualDepartureAt?: number;
+  departureDeviationMinutes?: number;
+  generatedAt?: number;
   journeyId: string;
   businessKey: string;
   schemaVersion: 2;
@@ -143,6 +154,13 @@ export interface Notification {
   status: "mock_sent";
 }
 export interface Thresholds {
+  completionMinProgress: number;
+  completionRadiusM: number;
+  completionMaxObservationGapMs: number;
+  autoStartLateMs: number;
+  startMinProgressM: number;
+  startMaxObservationGapMs: number;
+  startMaxOriginProgressM: number;
   timestampToleranceMs: number;
   recentSpeedWindowMs: number;
   etaMinFactor: number;
@@ -190,6 +208,13 @@ export interface EtaProvider {
   ): StationPrediction[];
 }
 export const defaults: Thresholds = {
+  completionMinProgress: 0.98,
+  completionRadiusM: 750,
+  completionMaxObservationGapMs: 5 * 60000,
+  autoStartLateMs: 6 * 3600000,
+  startMinProgressM: 100,
+  startMaxObservationGapMs: 5 * 60000,
+  startMaxOriginProgressM: 2000,
   timestampToleranceMs: 60000,
   recentSpeedWindowMs: 300000,
   etaMinFactor: 0.75,

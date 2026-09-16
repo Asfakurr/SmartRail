@@ -1,4 +1,9 @@
 "use client";
+import {
+  passengerStatus,
+  isTerminal,
+  lifecycleActions,
+} from "../shared/lifecycle-view";
 import { useEffect, useState } from "react";
 import dynamic from "next/dynamic";
 import MasterEditor from "./master-editor";
@@ -178,7 +183,8 @@ export default function Home() {
               >
                 {filtered.map((j) => (
                   <option key={j.id} value={j.id}>
-                    {j.scheduledTime} · {j.direction}
+                    {j.scheduledTime} · {j.direction} · {j.status}
+                    {j.generationSource === "SCHEDULE" ? " · generated" : ""}
                   </option>
                 ))}
               </select>
@@ -277,6 +283,8 @@ function JourneyView({
     [email, setEmail] = useState("admin@smartrail.test"),
     [password, setPassword] = useState(""),
     [newDate, setNewDate] = useState(journey.serviceDate),
+    [cancelReason, setCancelReason] = useState(""),
+    [lifecycleBusy, setLifecycleBusy] = useState(false),
     [newTime, setNewTime] = useState("12:00");
   useEffect(() => {
     if (!firebaseMode) return;
@@ -348,6 +356,10 @@ function JourneyView({
     );
   }, [user, journey.id, station]);
   async function step(wait = false) {
+    if (isTerminal(journey.status)) {
+      setRunning(false);
+      return;
+    }
     if (firebaseMode) {
       try {
         const result = await api("/simulate", {
@@ -396,7 +408,7 @@ function JourneyView({
     }
   }
   useEffect(() => {
-    if (!running) return;
+    if (!running || isTerminal(journey.status)) return;
     const timer = setTimeout(() => step(), 1200);
     return () => clearTimeout(timer);
   });
@@ -422,6 +434,8 @@ function JourneyView({
     );
   }
   async function subscribe() {
+    if (isTerminal(journey.status))
+      throw new Error(passengerStatus[journey.status]);
     if (
       live?.completed ||
       live?.predictions.find((p) => p.pointId === station)?.passed
@@ -512,10 +526,11 @@ function JourneyView({
   const nextPoint = journey.route.points.find(
     (p) => p.id === live?.nextPointId,
   );
-  const nextPrediction = live?.predictions.find(
-    (p) => p.pointId === nextPoint?.id,
-  );
-  const lastPrediction = live?.predictions.at(-1);
+  const terminal = isTerminal(journey.status);
+  const nextPrediction = terminal
+    ? undefined
+    : live?.predictions.find((p) => p.pointId === nextPoint?.id);
+  const lastPrediction = terminal ? undefined : live?.predictions.at(-1);
   const adminAllowed = !firebaseMode || isAdmin;
   return (
     <>
@@ -549,24 +564,39 @@ function JourneyView({
               <h2>{journey.trainSnapshot?.name || "Archived train"}</h2>
               <span className="muted">{journey.route.name}</span>
             </div>
-            <span className="badge">
-              {live?.completed
-                ? "Journey complete"
-                : live
-                  ? stale
-                    ? "GPS stale · last known position"
-                    : "Tracking active"
-                  : "Awaiting GPS"}
+            <span
+              className={journey.status === "CANCELLED" ? "error" : "badge"}
+              role="status"
+            >
+              {terminal ||
+              (journey.generationSource === "SCHEDULE" &&
+                journey.status !== "RUNNING")
+                ? passengerStatus[journey.status]
+                : live?.completed
+                  ? "Journey complete"
+                  : live
+                    ? stale
+                      ? "GPS stale · last known position"
+                      : "Tracking active"
+                    : "Awaiting GPS"}
             </span>
           </div>
           <section className="stats">
             <Stat
               label="NEXT ROUTE POINT"
-              value={live ? nextPoint?.name || "Arrived" : "Awaiting fix"}
+              value={
+                terminal
+                  ? passengerStatus[journey.status]
+                  : live
+                    ? nextPoint?.name || "Arrived"
+                    : "Awaiting fix"
+              }
               detail={
                 nextPrediction
                   ? `Expected ${format(nextPrediction.etaMs)}`
-                  : "Start the simulation below"
+                  : terminal
+                    ? "Live predictions have ended"
+                    : "Start the simulation below"
               }
               icon={<MapPin />}
             />
@@ -624,20 +654,36 @@ function JourneyView({
                   <div className="button-group">
                     <button
                       className="primary"
-                      disabled={live?.completed}
+                      disabled={
+                        terminal ||
+                        live?.completed ||
+                        (journey.generationSource === "SCHEDULE" &&
+                          journey.status === "SCHEDULED")
+                      }
                       onClick={() => setRunning(!running)}
                     >
                       {running ? <Pause size={16} /> : <Play size={16} />}{" "}
                       {running ? "Pause" : "Run"}
                     </button>
                     <button
-                      disabled={running || live?.completed}
+                      disabled={
+                        terminal ||
+                        running ||
+                        live?.completed ||
+                        (journey.generationSource === "SCHEDULE" &&
+                          journey.status === "SCHEDULED")
+                      }
                       onClick={() => step()}
                     >
                       Step
                     </button>
                     <button
-                      disabled={live?.completed}
+                      disabled={
+                        terminal ||
+                        live?.completed ||
+                        (journey.generationSource === "SCHEDULE" &&
+                          journey.status === "SCHEDULED")
+                      }
                       onClick={() => step(true)}
                     >
                       +12 min hold
@@ -665,7 +711,7 @@ function JourneyView({
               </div>
               <div className="route-list">
                 {journey.route.points.map((p, i) => {
-                  const pred = live?.predictions[i];
+                  const pred = terminal ? undefined : live?.predictions[i];
                   return (
                     <div
                       key={p.id}
@@ -748,7 +794,7 @@ function JourneyView({
                     required
                   />
                 </label>
-                <button className="primary" type="submit">
+                <button className="primary" type="submit" disabled={terminal}>
                   Subscribe <ArrowUpRight size={16} />
                 </button>
               </form>
@@ -993,6 +1039,85 @@ function JourneyView({
                   )}
                   {adminTab === "Journeys" && (
                     <div className="admin-body">
+                      <h3>Journey lifecycle</h3>
+                      <p role="status">
+                        <strong>{journey.status}</strong> ·{" "}
+                        {passengerStatus[journey.status]}
+                      </p>
+                      {journey.actualDepartureAt && (
+                        <p>
+                          Actual departure: {format(journey.actualDepartureAt)}
+                        </p>
+                      )}
+                      {journey.actualArrivalAt && (
+                        <p>Actual arrival: {format(journey.actualArrivalAt)}</p>
+                      )}
+                      {journey.cancellationReason && (
+                        <p>Reason: {journey.cancellationReason}</p>
+                      )}
+                      {firebaseMode &&
+                        journey.generationSource === "SCHEDULE" &&
+                        !terminal && (
+                          <>
+                            <label>
+                              Cancellation reason
+                              <input
+                                value={cancelReason}
+                                maxLength={300}
+                                onChange={(e) =>
+                                  setCancelReason(e.target.value)
+                                }
+                              />
+                            </label>
+                            <div className="button-group">
+                              {lifecycleActions(journey.status).map(
+                                (action) => (
+                                  <button
+                                    key={action}
+                                    disabled={
+                                      lifecycleBusy ||
+                                      (action === "Cancel" &&
+                                        !cancelReason.trim())
+                                    }
+                                    onClick={() => {
+                                      if (
+                                        action === "Cancel" &&
+                                        !window.confirm(
+                                          "Cancel this service? This cannot be undone.",
+                                        )
+                                      )
+                                        return;
+                                      setLifecycleBusy(true);
+                                      void act(async () => {
+                                        try {
+                                          await api(
+                                            `/${action.toLowerCase()}-journey`,
+                                            {
+                                              journeyId: journey.id,
+                                              ...(action === "Cancel"
+                                                ? {
+                                                    reason: cancelReason.trim(),
+                                                  }
+                                                : {}),
+                                            },
+                                          );
+                                          setRunning(false);
+                                          setMessage(
+                                            `${action} request accepted.`,
+                                          );
+                                        } finally {
+                                          setLifecycleBusy(false);
+                                        }
+                                      });
+                                    }}
+                                  >
+                                    {action}
+                                  </button>
+                                ),
+                              )}
+                            </div>
+                          </>
+                        )}
                       <h3>Create a journey from a saved schedule</h3>
                       <p className="mono">{journey.id}</p>
                       <form

@@ -1,3 +1,20 @@
+import { hasDestinationEvidence } from "../../shared/gps-completion";
+import {
+  hasDepartureEvidence,
+  selectGpsJourney,
+  withinAutoStartWindow,
+} from "../../shared/gps-start";
+import {
+  startJourney,
+  completeJourney,
+  cancelJourney,
+  transitionJourneyState,
+} from "./journey-lifecycle";
+import {
+  ensureJourneysForServiceDate,
+  reconcileJourneyOperations,
+} from "./journey-generation";
+import { RAILWAY_TIMEZONE } from "../../shared/service-date";
 import { markStaleGps } from "./stale";
 import { createFromSavedSchedule, saveMaster } from "./master-data";
 import { liveProjection } from "../../shared/live";
@@ -103,7 +120,34 @@ export async function processGps(
     )
       throw new Error("Forbidden");
   }
+  const submittedPing = ping;
   return db.runTransaction(async (tx) => {
+    const ping = { ...submittedPing };
+    const requested = await tx.get(db.doc(`journeys/${ping.journeyId}`));
+    const generatedRequest = requested.data()?.generationSource === "SCHEDULE";
+    const streamLock = db.doc(`deviceStartLocks/${ping.deviceId}`);
+    if (generatedRequest) {
+      await tx.get(streamLock);
+      const settings = await tx.get(db.doc("systemConfig/global"));
+      const assigned = await tx.get(
+        db
+          .collection("journeys")
+          .where(
+            "scheduleSnapshot.gpsDeviceIds",
+            "array-contains",
+            ping.deviceId,
+          )
+          .where("status", "in", ["READY", "RUNNING"]),
+      );
+      const selected = selectGpsJourney(
+        assigned.docs.map((d) => d.data() as Journey),
+        ping.deviceId,
+        ping,
+        now,
+        { ...defaults, ...settings.data() },
+      );
+      if (selected) ping.journeyId = selected.id;
+    }
     const journeyRef = db.doc(`journeys/${ping.journeyId}`),
       stateRef = db.doc(`liveInternal/${ping.journeyId}`);
     const checkpointRef = db.doc(
@@ -147,6 +191,9 @@ export async function processGps(
       throw new Error("Prototype subscription capacity exceeded");
     const journey = journeyDoc.data() as Journey,
       previous = stateDoc.exists ? (stateDoc.data() as LiveState) : null;
+    const generated = journey.generationSource === "SCHEDULE";
+    if (generated && !["READY", "RUNNING"].includes(journey.status))
+      throw new Error("Generated journey must be READY or RUNNING");
     if (journey.schemaVersion !== 2)
       throw new Error(
         "Legacy journey is read-only; create a new journey from saved master data",
@@ -166,8 +213,20 @@ export async function processGps(
     }
     const config = { ...defaults, ...settingsDoc.data() } as Thresholds;
     const live = ingest(journey, ping, previous, now, config);
+    const shouldComplete =
+      generated && hasDestinationEvidence(journey, previous, live, config);
+    if (generated) live.completed = shouldComplete;
+    if (shouldComplete) live.predictions = [];
+    const shouldStart =
+      generated &&
+      withinAutoStartWindow(journey, now, config) &&
+      hasDepartureEvidence(journey, previous, live, config);
+    const canNotify = !generated || journey.status === "RUNNING" || shouldStart;
     const candidates =
-      config.notificationsEnabled && config.mockSmsEnabled
+      !shouldComplete &&
+      canNotify &&
+      config.notificationsEnabled &&
+      config.mockSmsEnabled
         ? notificationsFor(
             journey,
             live,
@@ -178,6 +237,24 @@ export async function processGps(
         : [];
     const refs = candidates.map((n) => db.doc(`notifications/${n.id}`));
     const existing = refs.length ? await tx.getAll(...refs) : [];
+    if (shouldStart)
+      await transitionJourneyState(
+        journey.id,
+        "RUNNING",
+        Date.now(),
+        { source: "GPS_AUTO", previous, live, config },
+        { tx, journey },
+      );
+    if (shouldComplete)
+      await transitionJourneyState(
+        journey.id,
+        "COMPLETED",
+        Date.now(),
+        { source: "GPS_AUTO", previous, live, config },
+        { tx, journey },
+      );
+    if (generatedRequest && !shouldComplete)
+      tx.set(streamLock, { journeyId: journey.id, updatedAt: Date.now() });
     tx.set(stateRef, {
       ...live,
       receivedAt: Date.now(),
@@ -232,7 +309,7 @@ export async function processGps(
           inferred: true,
         },
       );
-    if (!previous) event("JOURNEY_STARTED");
+    if (!previous && !generated) event("JOURNEY_STARTED");
     if (previous?.gpsStatus === "STALE") event("GPS_RECOVERED");
     if (previous && previous.source !== live.source)
       event("GPS_SOURCE_SWITCHED");
@@ -259,7 +336,7 @@ export async function processGps(
         predictions: live.predictions,
       },
     );
-    if (live.completed) {
+    if (!generated && live.completed) {
       subsDoc.docs.forEach((d) =>
         tx.update(d.ref, {
           active: false,
@@ -268,7 +345,7 @@ export async function processGps(
       );
       tx.update(journeyRef, { status: "COMPLETED" });
       event("JOURNEY_COMPLETED");
-    } else if (journey.status !== "RUNNING")
+    } else if (!generated && journey.status !== "RUNNING")
       tx.update(journeyRef, { status: "RUNNING" });
     return live;
   });
@@ -316,6 +393,41 @@ export const api = onRequest(
         res.json({ live });
         return;
       }
+      if (path === "/complete-journey" || path === "/cancel-journey") {
+        const user = await admin(req.headers.authorization);
+        if (path === "/complete-journey") {
+          const input = z
+            .object({ journeyId: idSchema })
+            .strict()
+            .parse(req.body);
+          res.json({ result: await completeJourney(input.journeyId) });
+        } else {
+          const input = z
+            .object({
+              journeyId: idSchema,
+              reason: z.string().trim().min(1).max(300),
+            })
+            .strict()
+            .parse(req.body);
+          res.json({
+            result: await cancelJourney(
+              input.journeyId,
+              input.reason,
+              user.uid,
+            ),
+          });
+        }
+        return;
+      }
+      if (path === "/start-journey") {
+        await admin(req.headers.authorization);
+        const input = z
+          .object({ journeyId: idSchema })
+          .strict()
+          .parse(req.body);
+        res.json({ result: await startJourney(input.journeyId) });
+        return;
+      }
       if (path === "/journey-status") {
         await admin(req.headers.authorization);
         const input = z
@@ -329,6 +441,10 @@ export const api = onRequest(
           const r = db.doc(`journeys/${input.journeyId}`),
             j = await tx.get(r);
           if (!j.exists) throw new Error("Journey missing");
+          if (j.data()?.generationSource === "SCHEDULE")
+            throw new Error(
+              "Generated journeys use centralized lifecycle automation",
+            );
           const stateRef = db.doc(`liveInternal/${input.journeyId}`),
             state = await tx.get(stateRef),
             subs = await tx.get(
@@ -419,10 +535,16 @@ export const api = onRequest(
           timestamp,
         );
         res.json({
-          live: liveProjection(journey, live, {
-            ...defaults,
-            ...(await db.doc("systemConfig/global").get()).data(),
-          }),
+          live: liveProjection(
+            (
+              await db.doc(`journeys/${live.journeyId}`).get()
+            ).data() as Journey,
+            live,
+            {
+              ...defaults,
+              ...(await db.doc("systemConfig/global").get()).data(),
+            },
+          ),
         });
         return;
       }
@@ -447,6 +569,44 @@ export const api = onRequest(
         await admin(req.headers.authorization);
         const config = z
           .object({
+            completionMinProgress: z
+              .number()
+              .min(0.98)
+              .max(1)
+              .default(defaults.completionMinProgress),
+            completionRadiusM: z
+              .number()
+              .min(100)
+              .max(1000)
+              .default(defaults.completionRadiusM),
+            completionMaxObservationGapMs: z
+              .number()
+              .int()
+              .min(1000)
+              .max(600000)
+              .default(defaults.completionMaxObservationGapMs),
+            autoStartLateMs: z
+              .number()
+              .int()
+              .min(60000)
+              .max(86400000)
+              .default(defaults.autoStartLateMs),
+            startMinProgressM: z
+              .number()
+              .min(10)
+              .max(2000)
+              .default(defaults.startMinProgressM),
+            startMaxObservationGapMs: z
+              .number()
+              .int()
+              .min(1000)
+              .max(1800000)
+              .default(defaults.startMaxObservationGapMs),
+            startMaxOriginProgressM: z
+              .number()
+              .min(100)
+              .max(10000)
+              .default(defaults.startMaxOriginProgressM),
             delayMinutes: z.number().min(1).max(120),
             primaryStaleMs: z.number().int().min(1000).max(3600000),
             maxAccuracyM: z.number().positive().max(1000),
@@ -560,6 +720,15 @@ export const api = onRequest(
         res.json({ delayMinutes });
         return;
       }
+      if (path === "/reconcile-journeys") {
+        await admin(req.headers.authorization);
+        const input = z
+          .object({ serviceDate: z.string() })
+          .strict()
+          .parse(req.body);
+        res.json(await ensureJourneysForServiceDate(input.serviceDate));
+        return;
+      }
       if (path === "/journey") {
         await admin(req.headers.authorization);
         if (!demoEnabled())
@@ -595,4 +764,21 @@ export const api = onRequest(
 export const detectStaleGps = onSchedule(
   { schedule: "every 1 minutes", region: "asia-south1" },
   () => markStaleGps(),
+);
+
+export const reconcileScheduledJourneys = onSchedule(
+  {
+    schedule: "every 15 minutes",
+    timeZone: RAILWAY_TIMEZONE,
+    region: "asia-south1",
+    retryCount: 3,
+  },
+  async () => {
+    const summary = await reconcileJourneyOperations();
+    console.log("Journey reconciliation", JSON.stringify(summary));
+    if (summary.generation.failedCount || summary.readiness.failedCount)
+      throw new Error(
+        `Journey reconciliation: ${summary.generation.failedCount} generation and ${summary.readiness.failedCount} readiness failure(s)`,
+      );
+  },
 );

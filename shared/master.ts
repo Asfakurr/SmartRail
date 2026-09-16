@@ -1,3 +1,12 @@
+import {
+  isScheduleOperatingOnDate,
+  validateScheduleOperatingRules,
+  type ScheduleOperatingRules,
+} from "./schedule";
+import {
+  combineServiceDateAndScheduleTime,
+  scheduledOffsetToTimestamp,
+} from "./service-date";
 import type { Journey, Route, Train } from "./domain";
 import { journeyId as businessKey } from "./domain";
 import { validateRoute } from "./engine";
@@ -58,16 +67,14 @@ export interface ScheduleTiming {
   scheduledArrivalOffsetSeconds: number;
   scheduledDepartureOffsetSeconds: number;
 }
-export interface ScheduleConfiguration {
+export interface ScheduleConfiguration extends ScheduleOperatingRules {
   scheduleId: string;
   trainNumber: string;
   routeId: string;
   direction: string;
   gpsDeviceIds: string[];
   scheduledDepartureTime: string;
-  operatingDays: number[];
   timezone: "Asia/Dhaka";
-  active: boolean;
   version: number;
   timings: ScheduleTiming[];
 }
@@ -119,6 +126,7 @@ export function routeView(config: RouteConfiguration): Route {
 }
 export function validateMaster(bundle: MasterBundle) {
   const { train, route, schedule } = bundle;
+  validateScheduleOperatingRules(schedule);
   const ids = [
     train.number,
     route.routeId,
@@ -139,7 +147,6 @@ export function validateMaster(bundle: MasterBundle) {
     throw new Error("Invalid master IDs, departure time or capacity");
   if (
     !schedule.operatingDays.length ||
-    !schedule.gpsDeviceIds.length ||
     [train.name, route.name, ...route.points.map((p) => p.name)].some(
       (name) => typeof name !== "string" || !name.trim() || name.length > 120,
     )
@@ -156,7 +163,6 @@ export function validateMaster(bundle: MasterBundle) {
   if (
     !train.active ||
     !route.active ||
-    !schedule.active ||
     !train.routeIds.includes(route.routeId) ||
     train.number !== schedule.trainNumber ||
     route.routeId !== schedule.routeId ||
@@ -172,8 +178,7 @@ export function validateMaster(bundle: MasterBundle) {
   if (
     route.segments.length !== route.points.length - 1 ||
     schedule.timings.length !== route.points.length ||
-    schedule.timezone !== "Asia/Dhaka" ||
-    schedule.operatingDays.some((d) => !Number.isInteger(d) || d < 0 || d > 6)
+    schedule.timezone !== "Asia/Dhaka"
   )
     throw new Error("Invalid schedule or segment coverage");
   if (
@@ -243,26 +248,24 @@ export function createJourneySnapshot(
     route.routeId,
     route.direction,
   );
-  const departureMs = Date.parse(
-    `${serviceDate}T${schedule.scheduledDepartureTime}:00+06:00`,
+  const departureMs = combineServiceDateAndScheduleTime(
+    serviceDate,
+    schedule.scheduledDepartureTime,
   );
-  if (
-    !Number.isFinite(departureMs) ||
-    new Date(departureMs + 21600000).toISOString().slice(0, 10) !== serviceDate
-  )
-    throw new Error("Invalid service date");
-  if (
-    !schedule.operatingDays.includes(
-      new Date(`${serviceDate}T00:00:00Z`).getUTCDay(),
-    )
-  )
+  if (!isScheduleOperatingOnDate(schedule, serviceDate))
     throw new Error("Schedule does not operate on service date");
   const points = route.points.map((p, i) => ({
     ...p,
-    scheduledArrivalAt:
-      departureMs + schedule.timings[i].scheduledArrivalOffsetSeconds * 1000,
-    scheduledDepartureAt:
-      departureMs + schedule.timings[i].scheduledDepartureOffsetSeconds * 1000,
+    scheduledArrivalAt: scheduledOffsetToTimestamp(
+      serviceDate,
+      schedule.scheduledDepartureTime,
+      schedule.timings[i].scheduledArrivalOffsetSeconds,
+    ),
+    scheduledDepartureAt: scheduledOffsetToTimestamp(
+      serviceDate,
+      schedule.scheduledDepartureTime,
+      schedule.timings[i].scheduledDepartureOffsetSeconds,
+    ),
   }));
   return {
     id,

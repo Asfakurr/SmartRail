@@ -1,6 +1,8 @@
 # SmartRail BD stable MVP checkpoint — 2026-09-13
 
-Resume from this repository, not from a new scaffold. Feature development is paused at the user's request. This handoff supersedes outdated v0.1 run instructions in docs/ARCHITECTURE.md, docs/API.md and docs/VALIDATION.md where they conflict. No threshold behavior was changed or separately validated during checkpoint completion.
+**Latest working tree (2026-09-15):** Phase 2.1 generated lifecycle is implemented through completion/cancellation, intentionally uncommitted on baseline `6798eb5`. See [completion and demo instructions](docs/JOURNEY_COMPLETION.md). The working tree includes schedule/date foundation, generation/reconciliation, readiness, GPS/admin start, conservative GPS completion, admin Complete/Cancel, transactional subscription/device cleanup and minimal lifecycle UI. Automated verification: 57/57 unit tests, all five isolated integration suites, backend/frontend TypeScript and production build passed. HTTP smoke returned 200. Interactive browser verification remains outstanding: the in-app browser failed with `ERR_NETWORK_IO_SUSPENDED` despite the local server responding normally; status/action mappings are unit-tested, but visual controls/refresh were not reverified this session. No commit, deployment or later-phase work. Test emulators used empty isolated databases; the existing `.emulator-data` export was not touched.
+
+Resume from this repository, not from a new scaffold. Stop after this Phase 2.1 scope; final visual demo rehearsal is the remaining verification step. This handoff supersedes outdated v0.1 run instructions in docs/ARCHITECTURE.md, docs/API.md and docs/VALIDATION.md where they conflict. No threshold behavior was changed or separately validated during checkpoint completion.
 
 ## Saved state and working features
 

@@ -202,10 +202,12 @@ async function main() {
       .size,
     2,
   );
+  const expectedRevision = (await db.doc(`liveInternal/${j.id}`).get()).data()!
+    .revision;
   let published = false;
   for (let i = 0; i < 30; i++) {
     const snap = await getDatabase().ref(`liveJourneys/${j.id}`).get();
-    if (snap.exists()) {
+    if (snap.exists() && snap.val().revision >= expectedRevision) {
       assert.equal(snap.val().journeyId, j.id);
       assert.equal(snap.val().position.latitude, j.route.points[0].lat);
       assert.equal(snap.val().tracking.deviceId, "demo-gnss");
